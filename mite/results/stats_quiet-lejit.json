@@ -1,0 +1,1 @@
+{"bench": "stats_quiet", "mode": "lejit", "check": false, "maxrss_mb": 165.78125, "warm": 217755.50437701485, "first_s": 217623.0780374912, "warmup_s": 0.0, "total_ops": 1500000, "elapsed": 6.8991721519996645, "lejit_at": 0.0, "per_s": [217623, 217371, 217106, 216611, 217496, 217747]}

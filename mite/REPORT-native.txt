@@ -1,0 +1,180 @@
+Native profile (perf, kernel.perf_event_paranoid = 1)
+=====================================================
+
+How: bench/perf.sh. Each benchmark runs a fixed number of ops (--ops, no
+digest work), plain on core 3 and LeJIT on core 5 at the same time, under
+prlimit --as=4000000000, with perf record -F 2000 --call-graph fp:
+  stats 60,000 msgs; stats_quiet 1,500,000 msgs; controller 100,000
+  requests; runner 2,000,000 msgs.
+stats_quiet is the what-if: each matcher_by_type matcher has its
+logger.debug f-string removed. Its output digest is the same as stats.
+bench/perfsplit.py sorts self samples into the categories below. LeJIT's
+code shows up in perf as dso "[JIT] tid <pid>": these are the anonymous
+rwx mappings from lejit/src/platform.c:psyco_allocate_executable_buffer.
+One 1 MB region of that mapping holds over 90% of the JIT samples in every
+run. Setup (loading the pool, imports) is under 5% of each run.
+CPython 3.10 is built without frame pointers, so call stacks from fp are
+poor; I used --call-graph dwarf for stats_quiet only (for inclusive
+costs). DWARF unwinding can't get through JIT code, which has no CFI.
+
+Breakdown of self cycles, % of samples
+--------------------------------------
+                               stats       stats_quiet   controller    runner
+                               plain LeJIT plain  LeJIT  plain LeJIT  plain LeJIT
+CPython eval loop                3.6  0.3  28.2   5.1    31.6 11.7   15.5  7.6
+CPython float->str (dtoa)       40.5 41.6   -     -       -    -      -     -
+CPython unicode/repr/format     22.9 23.4   5.8   8.2     0.6  1.1    1.8  1.8
+CPython dict                     4.8  4.5  12.8  14.0     9.7 14.2   12.5 13.5
+CPython hashing                  0.2  0.3   4.3   6.7     1.2  2.1    0.2  0.2
+CPython tuple                    0.1  0.5   2.1   5.2     1.7  3.0    1.5  2.2
+CPython int / float              2.1/0 2.3/0 0.8/0.6 0.9/0.7 5.9/2.2 4.9/0  0.9/0.4 1.0/0.3
+CPython alloc/free               5.5  5.2   9.8   8.8     7.5  6.7    8.3  7.9
+CPython GC                       0.2  0.3   0.2   0.3     0.2  0.3   15.2 15.8
+CPython calls/attrs/frames       1.9  0.9  14.1   9.3    10.1  7.0   11.8  9.9
+CPython other                   11.6 11.2  15.3  10.8    22.6 22.5   13.9 13.3
+LeJIT compiled code ([JIT])       -   1.7    -   14.0      -  12.7     -   5.2
+LeJIT runtime+compiler (_core)    -   1.7    -    8.1      -   3.8     -   4.0
+C ext: msgpack                   0.2  0.2   3.6   5.7     3.8  6.7   11.2 11.5
+C ext: uvloop / _random           -    -     -     -      -/0.5 0.3/1.1 1.6  1.6
+libc/libm                        6.0  6.2   1.5   2.6     1.5  2.4    4.0  4.4
+kernel                           0.2  0.4   0.4   0.8     0.3  0.8    1.3  1.3
+("CPython other" is mostly set and iterator code in the controller,
+PyIter_Next and set_add_entry, and misc helpers elsewhere.)
+
+Notes per benchmark
+- stats: 64-65% of cycles turn the message into text (dtoa for floats:
+  _Py_dg_dtoa, diff, quorem, multadd, Balloc; unicode_repr, dict_repr,
+  PyObject_Repr), plus most of alloc/free and libc memmove. That's the
+  debug f-string. LeJIT's own code is 3.4% of the run. Nothing to compile.
+- controller: under LeJIT, 11.7% is still in the eval loop. That's the
+  coroutines it won't compile (get_work, ControllerServer.run, datapool
+  checkout, the _yield generator). Compiled code is 12.7%. The rest is C:
+  sets/dicts (get_active, get_total_work), msgpack, random.
+- runner: GC is about 15% in both modes (gc_collect_main 10.7%: every
+  journey allocates a task, frames, a Context and dicts, which triggers
+  gen-0 collections). msgpack pack is 11%. LeJIT compiles only 5.2%; the
+  journeys, _execute, transaction() and Runner._run are coroutines or
+  generators and stay interpreted.
+
+Top 15 self symbols
+-------------------
+stats plain:  _Py_dg_dtoa 10.2, diff 9.0, unicode_repr 7.7, quorem 7.3,
+  multadd 6.1, PyObject_Repr 4.0, _copy_characters 3.7,
+  _PyEval_EvalFrameDefault 3.4, PyUnicode_New 2.7, Balloc 2.5, memmove 2.5,
+  _PyObject_Free 2.3, dict_repr 2.1, _PyUnicodeWriter_WriteASCIIString 1.8,
+  lshift 1.7
+stats LeJIT:  _Py_dg_dtoa 11.1, unicode_repr 9.2, diff 8.9, quorem 7.4,
+  multadd 6.3, PyObject_Repr 3.7, _copy_characters 3.7, PyUnicode_New 2.7,
+  memmove 2.5, dict_repr 2.3, _PyObject_Free 2.3, Balloc 2.2,
+  long_to_decimal_string_internal 1.7, lshift 1.7, PyOS_double_to_string 1.6
+  ([JIT] 1.7 in all; LeEval_EvalFrame 0.18)
+stats_quiet plain:  _PyEval_EvalFrameDefault 25.9, frame_dealloc 4.8,
+  _PyEval_MakeFrameVector 4.2, _PyObject_GetMethod 3.3, unpack_execute 2.8,
+  PyDict_GetItemWithError 2.7, _PyFrame_New_NoTrack 2.5, _PyEval_Vector 2.3,
+  siphash24 2.1, PyObject_RichCompare 1.7, _Py_CheckFunctionResult 1.7,
+  lookdict_unicode_nodummy 1.6, ascii_decode 1.6, _PyType_Lookup 1.5,
+  lookdict_split 1.4
+stats_quiet LeJIT:  [JIT] 14.0 (in all), unpack_execute 4.3,
+  _PyEval_EvalFrameDefault 3.8, siphash24 3.3, lookdict_unicode_nodummy 3.1,
+  insertdict 2.7, tupledealloc 2.5, frame_dealloc 2.4, ascii_decode 2.3,
+  _PyEval_MakeFrameVector 2.2, cimpl_dict_get_impl 2.2 (_core),
+  LeEval_EvalFrame 1.8 (_core), _PyObject_Free 1.8, PyUnicode_New 1.8,
+  lookdict_unicode 1.4
+controller plain:  _PyEval_EvalFrameDefault 31.0, PyObject_RichCompare 2.3,
+  PyIter_Next 2.2, msgpack Packer._pack_inner 1.9, set_add_entry 1.6,
+  _PyObject_Free 1.6, PyNumber_Add 1.6, insertdict 1.4, lookdict 1.3,
+  PyLong_FromLong 1.2, _PyType_Lookup 1.2, dictiter_iternextitem 1.2,
+  frame_dealloc 1.2, _Py_CheckFunctionResult 1.0, PyType_IsSubtype 1.0
+controller LeJIT:  [JIT] 12.7 (in all), _PyEval_EvalFrameDefault 11.4,
+  PyIter_Next 3.3, Packer._pack_inner 3.3, set_add_entry 3.0, lookdict 2.5,
+  dictiter_iternextitem 2.5, insertdict 2.0, tupledealloc 1.8,
+  _PyObject_Free 1.7, unpack_execute 1.5, PyObject_Hash 1.5,
+  dictiter_iternextkey 1.3, PyLong_FromLong 1.3, dict_subscript 1.2
+  (_core: LeEval_EvalFrame 0.6, cimpl_dictstr_getitem 0.4)
+runner plain:  _PyEval_EvalFrameDefault 14.5, gc_collect_main 10.2,
+  Packer._pack_inner 6.7, insertdict 2.7, _PyEval_MakeFrameVector 2.7,
+  Packer._pack 1.9, frame_dealloc 1.8, _PyObject_Free 1.5,
+  visit_reachable 1.5, memmove 1.4, msgpack_pack_write 1.4,
+  lookdict_unicode_nodummy 1.2, _PyDict_Next 1.2, visit_decref 1.2,
+  frame_traverse 1.1
+runner LeJIT:  gc_collect_main 10.7, _PyEval_EvalFrameDefault 6.9,
+  Packer._pack_inner 6.8, [JIT] 5.2 (in all), insertdict 3.2,
+  _PyEval_MakeFrameVector 2.2, Packer._pack 1.8, visit_reachable 1.5,
+  _PyDict_Next 1.5, memmove 1.5, frame_dealloc 1.4, _PyObject_Free 1.4,
+  lookdict_unicode_nodummy 1.4, msgpack_pack_write 1.4, frame_traverse 1.2
+  (_core: LeEval_EvalFrame 1.0)
+
+Stats with the f-string removed, under LeJIT: where the time goes
+------------------------------------------------------------------
+(self %, grouped by hand from the full symbol list; 5.1 us/msg against
+6.8 plain, i.e. 1.33x)
+  LeJIT compiled code ([JIT])                                   14.0
+  LeJIT C helpers (_core): cimpl_dict_get_impl 2.2 (msg.get),
+    LeEval_EvalFrame 1.8, cimpl_unicode_eq 0.5, frame register/
+    unregister 0.65, eval-breaker checks 0.4, ...                8.1
+  interpreted generators (extract_items, run uncompiled):
+    _PyEval_EvalFrameDefault 3.8, _PyEval_MakeFrameVector 2.2,
+    frame_dealloc 2.4, _PyFrame_New_NoTrack 1.2, _PyEval_Vector
+    1.3, gen_iternext 1.1, PyVectorcall_Call 0.7                ~12.5
+  msgpack decode, including building the message's str and dict:
+    unpack_execute 4.3, unpackb 0.6, ascii_decode 2.3,
+    PyUnicode_New 1.8, unicode_decode_utf8 1.2, key interning
+    (PyDict_SetDefault, PyUnicode_InternInPlace) 1.75           ~12
+    (DWARF inclusive: unpackb 7.8% LeJIT, 5.4% plain.)
+  dict lookup and store (label-tuple keys, defaultdicts, msg.get):
+    lookdict* 5.4, insertdict 2.7, PyDict_SetItem 0.8,
+    dict_subscript 0.7, dictresize 0.8, keys free 0.6, ...      ~11.5
+  hashing: siphash24 3.3, _Py_HashBytes 1.1, unicode_hash 0.9,
+    PyObject_Hash 0.6, tuplehash 0.5                             6.4
+    Most of this is hashing the label strings fresh from msgpack
+    (they carry no cached hash) the first time each label tuple is
+    used as a dict key.
+  tuples: tupledealloc 2.5, PyTuple_New 0.7, tuple_alloc 0.4,
+    tuplerichcompare 0.7 (label keys and the (key, value) the
+    generator yields)                                           ~4.3
+  comparisons: PyObject_RichCompare 1.4, PyUnicode_RichCompare 1.3,
+    PyObject_RichCompareBool 0.9 (the `type in targets` test against
+    uninterned strs, histogram bin tests)                       ~3.6
+  allocation: _PyObject_Free 1.8, _PyObject_Malloc 1.3,
+    _Py_NewReference 1.1                                        ~4.2
+  float boxing: PyFloat_FromDouble 0.31, float_dealloc 0.34      0.7
+So: compiled code and LeJIT helpers make up 22%, interpreted generators
+12.5%, and C object work (msgpack, dict, hash, tuple, alloc, compare)
+roughly 55-60%. Boxing floats is negligible (0.7%). As the checked build
+showed, there's very little float maths in this path.
+
+What LeJIT would need to get well past 1.33x here
+- Compile generators, or at least inline a simple generator (one loop,
+  yield of a tuple) into the `for` loop that consumes it, as it already
+  does for generator expressions. That removes the ~12.5% of frame create,
+  eval and free work. It also lets the yielded (key, value) tuple stay
+  virtual, which saves part of the tuple alloc/free and RichCompare.
+- Inline dict.get with a str constant key (the hash is known at compile
+  time) instead of calling cimpl_dict_get_impl, and inline the
+  `x in (const tuple of str)` test as pointer-equality checks first.
+- Even with all of that, the C object work stays: about 55-60% of
+  today's LeJIT time. That makes the ceiling about 2x over plain for this
+  code. Going further would need the data to change, not the JIT: decode
+  each message once and share it, intern or cache label strings so
+  hashing is paid once, and dispatch on msg["type"] once instead of
+  running 32 matchers per message.
+
+Can LeJIT's code be symbolised cheaply for perf?
+------------------------------------------------
+Yes, it's feasible and cheap. perf already labels LeJIT's code
+"[JIT] tid <pid>", which means it looks for /tmp/perf-<pid>.map: a text
+file of "START SIZE name" lines in hex, which it reads at report time. All
+of LeJIT's code comes from psyco_new_code_buffer (codemanager.c) inside
+the rwx regions from platform.c, so one fprintf, gated by an environment
+variable, when a buffer is closed (start, size, and co_name:firstlineno
+of the code being compiled) would do it. Two caveats:
+- Freed buffers get reused, so stale entries can overlap; you'd get the
+  name of the last code compiled at that address.
+- The file has to be in /tmp.
+perf's jitdump format (perf inject --jit) would give per-buffer names and
+code bytes, but needs more work. I haven't changed LeJIT.
+
+Rerun: bench/perf.sh (then bench/perfsplit.py FILE.data for one file).
+The DWARF recording for stats_quiet: see the command in this run's notes;
+  perf record -F 1000 --call-graph dwarf,16384 -o ... -- \
+    ../venv/bin/python -I mitebench.py stats_quiet --mode lejit --ops 500000

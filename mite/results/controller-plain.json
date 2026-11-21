@@ -1,0 +1,1 @@
+{"bench": "controller", "mode": "plain", "check": false, "maxrss_mb": 92.97265625, "warm": 11685.55129959842, "first_s": 3143.880935556068, "warmup_s": 3.25, "total_ops": 100000, "elapsed": 11.104426276000595, "lejit_at": null, "per_s": [3144, 1313, 2957, 9893, 11738, 11749, 11724, 11674, 11682, 11724, 11686]}
