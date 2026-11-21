@@ -1,17 +1,15 @@
 """Instruction counts (perf stat -e instructions:u) of compiling and of warm
 code, for comparing two builds without wall time:
 
-  cold     one fresh process per pyperformance benchmark: start, import Ni,
-           load the benchmark, one iteration of each of its functions
+  cold     one fresh process per pyperformance benchmark: start, import and
+           start LeJIT, load the benchmark, one iteration of each of its
+           functions
   warm     per iteration, warm: (3 iterations then N) minus (3 alone), / N;
            N is -n, raised for a bench whose N iterations come to under
            WARM_LOOP instructions
-  adv      one fresh process per adversarial benchmark, as run.py's child
-           at the short length (5 training calls, 15 timed)
 
-    python3.7 tools/instrcount.py cold [-k NAME] [--plain]
-    python3.7 tools/instrcount.py warm [-k NAME] [-b BENCH | --each] [-n 20] [-r 1]
-    python3.7 tools/instrcount.py adv -k import_heavy -k many_functions
+    python3.10 tools/instrcount.py cold [-k NAME] [--plain]
+    python3.10 tools/instrcount.py warm [-k NAME] [-b BENCH | --each] [-n 20] [-r 1]
 
 -k may be repeated (names containing any of them); -b (repeatable) runs
 only the named benches of a script that has several (deepcopy_memo,
@@ -19,9 +17,9 @@ scimark_fft), each counted on its own row; --each gives every bench of
 every script its own row, named as the bench (create_gc_cycles, not
 gc_collect); -r repeats each count and
 prints every repeat. PYTHONHASHSEED=0, address-space randomisation off
-(setarch -R) and every process under a 4 GB address-space limit. Use a
-release build; NI_MODULE_DIR names the directory of another build's
-ni.so to measure (default the repo's).
+(setarch -R) and every process under a 4 GB address-space limit. Counts
+the Python that runs this, with the LeJIT checkout given by --lejit DIR,
+else $LEJIT, else ~/work/lejit, built for release in place for that Python.
 """
 import glob
 import os
@@ -31,9 +29,7 @@ import subprocess
 import sys
 import tempfile
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-TOOLS = os.path.join(ROOT, 'tools')
-ADV = os.path.join(TOOLS, 'adversarial')
+TOOLS = os.path.dirname(os.path.abspath(__file__))
 MEMORY_LIMIT = 4000000000
 # Address-space randomisation moves one process's count by up to 10 M
 # instructions (deepcopy_reduce on 3.10), more than a small bench's warm loop
@@ -76,12 +72,9 @@ def count(args, timeout=900):
 
 def child_bench(mode, script, first, more, only=''):
     sys.path.insert(0, TOOLS)
-    if mode == 'ni':
-        sys.path.insert(0, os.environ.get('NI_MODULE_DIR') or ROOT)
-        import ni
-        if not hasattr(ni, '_stats'):  # the ni/ directory, no ni.so built
-            raise SystemExit('no Ni extension in ' + (os.environ.get('NI_MODULE_DIR') or ROOT))
     import pyperf37
+    if mode == 'lejit':
+        pyperf37.start_lejit()
     for name, timed in pyperf37.load(script):
         if only and name != only:
             continue
@@ -103,18 +96,6 @@ def bench_names(script):
                        stdout=subprocess.PIPE, universal_newlines=True, check=True,
                        env=dict(os.environ, PYTHONHASHSEED='0'), preexec_fn=limit)
     return p.stdout.split()
-
-
-def child_adv(mode, path, n):
-    sys.argv = [os.path.join(ADV, 'run.py')]
-    sys.path.insert(0, ADV)
-    import run
-    out = tempfile.mktemp(suffix='.json')
-    try:
-        run.child(mode, path, n, 5, 15, -1, out)
-    finally:
-        if os.path.exists(out):
-            os.unlink(out)
 
 
 def warm(me, mode, p, n, b, reps):
@@ -147,46 +128,29 @@ def main(argv):
     n = int(argv[argv.index('-n') + 1]) if '-n' in argv else 20
     reps = int(argv[argv.index('-r') + 1]) if '-r' in argv else 1
     benches = [argv[i + 1] for i, a in enumerate(argv) if a == '-b']
-    mode = 'plain' if '--plain' in argv else 'ni'
+    mode = 'plain' if '--plain' in argv else 'lejit'
     me = os.path.abspath(__file__)
     total = 0
-    if what == 'adv':
-        sys.path.insert(0, ADV)
-        sizes = {}
-        for line in open(os.path.join(ADV, 'sizes.txt')):
-            f = line.split()
-            if f and not line.startswith('#'):
-                sizes[f[0]] = int(f[1])
-        paths = selected(sorted(glob.glob(os.path.join(ADV, '*.py'))
-                                + glob.glob(os.path.join(ADV, 'round2', '*.py'))), keys)
-        paths = [p for p in paths if name_of(p) in sizes]
-        for p in paths:
-            cs = [count([me, '--adv', mode, p, str(sizes[name_of(p)])]) for _ in range(reps)]
-            total += cs[0]
-            print('%-24s %s' % (name_of(p), ' '.join('%15d' % c for c in cs)), flush=True)
-    else:
-        paths = selected(sorted(glob.glob(os.path.join(TOOLS, 'pyperformance', 'bm_*.py'))), keys)
-        each = '--each' in argv
-        for p, b in [(p, b) for p in paths
-                     for b in (bench_names(p) if each else benches or [''])]:
-            if what == 'cold':
-                cs = [count([me, '--bench', mode, p, '1', '0', b]) for _ in range(reps)]
-            else:
-                cs = warm(me, mode, p, n, b, reps)
-            total += cs[0]
-            print('%-24s %s' % (b or name_of(p), ' '.join('%15d' % c for c in cs)), flush=True)
+    paths = selected(sorted(glob.glob(os.path.join(TOOLS, 'pyperformance', 'bm_*.py'))), keys)
+    each = '--each' in argv
+    for p, b in [(p, b) for p in paths
+                 for b in (bench_names(p) if each else benches or [''])]:
+        if what == 'cold':
+            cs = [count([me, '--bench', mode, p, '1', '0', b]) for _ in range(reps)]
+        else:
+            cs = warm(me, mode, p, n, b, reps)
+        total += cs[0]
+        print('%-24s %s' % (b or name_of(p), ' '.join('%15d' % c for c in cs)), flush=True)
     print('%-24s %15d' % ('total', total))
 
 
 if __name__ == '__main__':
-    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    import heavy
-    heavy.hold()
+    sys.path.insert(0, TOOLS)
+    import pyperf37
+    pyperf37.lejit_dir(sys.argv)
     if sys.argv[1] == '--bench':
         child_bench(sys.argv[2], sys.argv[3], int(sys.argv[4]), int(sys.argv[5]), *sys.argv[6:])
     elif sys.argv[1] == '--names':
         child_names(sys.argv[2])
-    elif sys.argv[1] == '--adv':
-        child_adv(sys.argv[2], sys.argv[3], int(sys.argv[4]))
     else:
         main(sys.argv[1:])

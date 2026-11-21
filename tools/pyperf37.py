@@ -1,15 +1,17 @@
 """pyperformance's pure-Python benchmarks (tools/pyperformance/, vendored
-from pyperformance 1.11.0, MIT) under CPython 3.7 with and without Ni.
+from pyperformance 1.11.0, MIT) with and without LeJIT, on the Python that
+runs this.
 
 pyperformance itself won't run them on 3.7 (they declare 3.8+) and needs
 pyperf; here a stand-in 'pyperf' module calls each benchmark's function
 directly. The loop count is calibrated on CPython (about 0.2 s), then each
 mode runs one warm-up and the best of five, in a fresh process.
 
-    python3.7 tools/pyperf37.py              # table
-    python3.7 tools/pyperf37.py -k richards  # names containing 'richards'
+    python3.10 tools/pyperf37.py              # table
+    python3.10 tools/pyperf37.py -k richards  # names containing 'richards'
 
-Use a release build, as for tools/bench.py.
+The LeJIT checkout is --lejit DIR, else $LEJIT, else ~/work/lejit, built
+for release in place for this Python (make PY=python3.10).
 """
 import argparse
 import glob
@@ -22,6 +24,35 @@ import types
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BMDIR = os.path.join(ROOT, 'tools', 'pyperformance')
 TARGET = 0.2
+
+
+def lejit_dir(argv=None):
+    """the LeJIT checkout: --lejit DIR (taken out of argv, and passed on to
+    child processes in $LEJIT), else $LEJIT, else ~/work/lejit"""
+    if argv and '--lejit' in argv:
+        i = argv.index('--lejit')
+        os.environ['LEJIT'] = os.path.abspath(argv[i + 1])
+        del argv[i:i + 2]
+    return os.path.abspath(os.path.expanduser(
+        os.environ.get('LEJIT') or '~/work/lejit'))
+
+
+def start_lejit(d=None):
+    """import LeJIT from the checkout d (default lejit_dir()), start it and
+    return its extension module; an older checkout's ni starts on import"""
+    d = d or lejit_dir()
+    sys.path.insert(0, d)
+    if os.path.isdir(os.path.join(d, 'lejit')):
+        import lejit
+        if lejit._core is None:
+            raise SystemExit('no LeJIT built for this Python in %s' % d)
+        lejit.start()
+        return lejit._core
+    import ni
+    if hasattr(ni, 'start'):
+        ni.start()
+        return ni._core
+    return ni
 
 
 class Runner:
@@ -83,9 +114,8 @@ def load(script):
 
 
 def child(mode, script, loops):
-    if mode == 'ni':
-        sys.path.insert(0, ROOT)
-        import ni  # noqa: F401
+    if mode == 'lejit':
+        start_lejit()
     out = {}
     for name, timed in load(script):
         n = loops.get(name)
@@ -110,23 +140,24 @@ def run_child(mode, script, loops):
 
 
 def main():
+    lejit_dir(sys.argv)
     scripts = sorted(glob.glob(os.path.join(BMDIR, 'bm_*.py')))
     if '-k' in sys.argv:
         k = sys.argv[sys.argv.index('-k') + 1]
         scripts = [s for s in scripts if k in os.path.basename(s)]
-    print('%-26s %9s %9s %8s' % ('', 'CPython', 'Ni', 'speed-up'))
+    print('%-26s %9s %9s %8s' % ('', 'CPython', 'LeJIT', 'speed-up'))
     ratios = []
     for s in scripts:
         plain, err = run_child('plain', s, {})
         if plain is None:
             print('%-26s CPython failed: %s' % (os.path.basename(s), err))
             continue
-        ni_res, err = run_child('ni', s, {k: v[0] for k, v in plain.items()})
+        jit_res, err = run_child('lejit', s, {k: v[0] for k, v in plain.items()})
         for name, (n, tp) in sorted(plain.items()):
-            if ni_res is None:
-                print('%-26s %8.3fs   Ni failed: %s' % (name, tp, err[:60]))
+            if jit_res is None:
+                print('%-26s %8.3fs   LeJIT failed: %s' % (name, tp, err[:60]))
                 continue
-            nn, tn = ni_res[name]
+            nn, tn = jit_res[name]
             if nn != n:
                 print('%-26s loop counts differ: %d, %d' % (name, n, nn))
                 continue

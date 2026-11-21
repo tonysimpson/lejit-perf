@@ -1,15 +1,19 @@
-"""Instruction counts of every merge to main, kept in bench/history/instrcount.jsonl.
+"""Instruction counts of every merge to LeJIT's main, kept in bench/history/instrcount.jsonl.
 
-    python3 tools/instrhistory.py record [COMMIT] [--python X.Y]... [--keep]
-    python3 tools/instrhistory.py report [A [B]] [--python X.Y]...
+    python3 tools/instrhistory.py record [COMMIT] [--python X.Y|PATH]... [--keep] [--lejit DIR]
+    python3 tools/instrhistory.py report [A [B]] [--python X.Y]... [--lejit DIR]
     python3 tools/instrhistory.py graph [-o FILE]
 
-record builds COMMIT (default HEAD) for release in a scratch tree,
+COMMIT is in the LeJIT repository given by --lejit DIR, else $LEJIT, else
+~/work/lejit. record builds it for release in a scratch tree,
 build/instrhistory/<commit>, once per version that was supported at that
-commit (its tools/versions.txt; 3.7 before there was one) and is supported
-here, one version at a time, and counts each with this checkout's
-tools/instrcount.py: warm (-n 10, raised for a short bench) and cold, every bench on its own row,
-two repeats. It holds a heavy-job slot throughout. It adds one line per
+commit (3.7 to 3.10 once there was a lejit package; before that its
+tools/versions.txt, and 3.7 before there was one), one version at a time,
+and counts each with this checkout's tools/instrcount.py: warm (-n 10,
+raised for a short bench) and cold, every bench on its own row, two
+repeats. --python picks versions (X.Y) or names an interpreter (PATH, its
+version read from it); the default interpreters are INTERPRETERS. Take a
+heavy-job slot before running it. It adds one line per
 (commit, version, bench, warm or cold); a commit already recorded with
 the same tool is refused. The scratch tree is removed unless --keep, and
 a tree already there is reused, with any module already built in it.
@@ -45,6 +49,8 @@ import subprocess
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(ROOT, 'tools'))
+import pyperf37  # noqa: E402
 HISTORY = os.path.join(ROOT, 'bench', 'history', 'instrcount.jsonl')
 SCRATCH = os.path.join(ROOT, 'build', 'instrhistory')
 # what the counts depend on: the counter, the harness and the benchmarks, and
@@ -56,12 +62,17 @@ ITERATIONS = 10
 REPEATS = 2
 NOISY_SPREAD = 0.01
 # moved by heap state alone, the sign changing under the heap controls
-# (PROFILE.md), though two repeats in one record agree
+# (README.md), though two repeats in one record agree
 NOISY_BENCHES = {'hexiom', 'scimark_lu', 'scimark_sor'}
 FLAG = 0.01
+INTERPRETERS = {v: os.path.expanduser('~/.pyenv/versions/%s/bin/python%s' % (full, v))
+                for v, full in (('3.7', '3.7.17'), ('3.8', '3.8.20'),
+                                ('3.9', '3.9.21'), ('3.10', '3.10.16'))}
 
 
-def git(*args, cwd=ROOT):
+def git(*args, cwd=None):
+    """git in the LeJIT repository, or in cwd"""
+    cwd = cwd or pyperf37.lejit_dir()
     return subprocess.run(['git', '-C', cwd] + list(args), stdout=subprocess.PIPE,
                           stderr=subprocess.DEVNULL, universal_newlines=True, check=True).stdout
 
@@ -80,11 +91,6 @@ def versions_table(text):
     return out
 
 
-def interpreter(v, table):
-    p = os.environ.get('NI_PY' + v.replace('.', '')) or table[v][1]
-    return os.path.expanduser(p)
-
-
 def files_hash(blobs):
     """a short hash of [(path, git blob id)], as git would list them"""
     h = hashlib.sha1()
@@ -100,7 +106,8 @@ def blob_id(path):
 
 def tool_version():
     """the measuring files' contents as they are here, and METHOD"""
-    paths = git('ls-files', '-co', '--exclude-standard', '-z', '--', *TOOL_FILES).split('\0')
+    paths = git('ls-files', '-co', '--exclude-standard', '-z', '--', *TOOL_FILES,
+                cwd=ROOT).split('\0')
     blobs = [(p, blob_id(os.path.join(ROOT, p))) for p in set(paths)
              if p and os.path.isfile(os.path.join(ROOT, p))]
     return 'files-%s/m%d' % (files_hash(blobs), METHOD)
@@ -152,7 +159,7 @@ def counts(py, tree, kind):
     if kind == 'warm':
         args += ['-n', str(ITERATIONS)]
     p = subprocess.run(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                       universal_newlines=True, env=dict(os.environ, NI_MODULE_DIR=tree),
+                       universal_newlines=True, env=dict(os.environ, LEJIT=tree),
                        preexec_fn=limit)
     if p.returncode:
         raise SystemExit('instrcount %s failed:\n%s' % (kind, p.stdout[-2000:]))
@@ -166,10 +173,11 @@ def counts(py, tree, kind):
 
 def build(tree, v, py):
     tag = v.replace('.', '')
-    if glob.glob(os.path.join(tree, 'ni.cpython-%s*.so' % tag)):
+    if glob.glob(os.path.join(tree, '*.cpython-%s*.so' % tag)) or \
+            glob.glob(os.path.join(tree, '*', '*.cpython-%s*.so' % tag)):
         return
     env = {k: x for k, x in os.environ.items()
-           if k not in ('NI_TRACE', 'NI_ALL_CHECKS', 'NI_SANITIZE', 'NI_CODESTATS')}
+           if not k.startswith(('NI_', 'LE_'))}
     log = os.path.join(tree, 'build-%s.log' % v)
     with open(log, 'w') as f:
         p = subprocess.run([py, 'setup.py', 'build_ext', '--inplace'], cwd=tree, stdout=f,
@@ -179,22 +187,30 @@ def build(tree, v, py):
 
 
 def record(argv):
-    sys.path.insert(0, os.path.join(ROOT, 'tools'))
-    import heavy
-    heavy.hold()
     rest = [a for i, a in enumerate(argv) if not a.startswith('-') and
             (i == 0 or argv[i - 1] != '--python')]
     sha = git('rev-parse', '--verify', (rest[0] if rest else 'HEAD') + '^{commit}').strip()
-    here = versions_table(open(os.path.join(ROOT, 'tools', 'versions.txt')).read())
-    try:
-        then = versions_table(git('show', sha + ':tools/versions.txt'))
-        wanted = [v for v, (s, _) in then.items() if s == 'supported']
-    except subprocess.CalledProcessError:
-        wanted = ['3.7']
-    asked = [argv[i + 1] for i, a in enumerate(argv) if a == '--python']
+    if git('ls-tree', sha, 'lejit'):
+        wanted = list(INTERPRETERS)
+    else:
+        try:
+            then = versions_table(git('show', sha + ':tools/versions.txt'))
+            wanted = [v for v, (s, _) in then.items() if s == 'supported']
+        except subprocess.CalledProcessError:
+            wanted = ['3.7']
+    pys = dict(INTERPRETERS)
+    asked = []
+    for a in [argv[i + 1] for i, a in enumerate(argv) if a == '--python']:
+        if os.sep in a:
+            v = subprocess.run([a, '-c', 'import sys; print("%d.%d" % sys.version_info[:2])'],
+                               stdout=subprocess.PIPE, universal_newlines=True,
+                               check=True).stdout.strip()
+            pys[v] = a
+            a = v
+        asked.append(a)
     if asked:
         wanted = [v for v in wanted if v in asked]
-    vs = [v for v in wanted if v in here and here[v][0] == 'supported']
+    vs = [v for v in wanted if os.path.exists(pys.get(v, ''))]
     if not vs:
         raise SystemExit('no version to measure (supported at %s: %s)' % (sha[:12], wanted))
     tool = tool_version()
@@ -209,12 +225,13 @@ def record(argv):
     tree = os.path.join(SCRATCH, sha[:12])
     if not os.path.isdir(tree):
         os.makedirs(tree)
-        archive = subprocess.Popen(['git', '-C', ROOT, 'archive', sha], stdout=subprocess.PIPE)
+        archive = subprocess.Popen(['git', '-C', pyperf37.lejit_dir(), 'archive', sha],
+                                   stdout=subprocess.PIPE)
         subprocess.run(['tar', '-x', '-C', tree], stdin=archive.stdout, check=True)
         if archive.wait():
             raise SystemExit('git archive failed')
     for v in vs:
-        py = interpreter(v, here)
+        py = pys[v]
         full = subprocess.run([py, '-c', 'import platform; print(platform.python_version())'],
                               stdout=subprocess.PIPE, universal_newlines=True,
                               check=True).stdout.strip()
@@ -439,7 +456,7 @@ def graph(argv):
 PAGE = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Ni instruction counts</title>
+<title>LeJIT instruction counts</title>
 <style>
 :root { --bg: #fff; --fg: #1a1a1a; --muted: #666; --grid: #e4e4e4; --line: #2563eb; }
 @media (prefers-color-scheme: dark) {
@@ -458,7 +475,7 @@ svg { width: 100%%; max-width: 640px; height: auto; display: block; margin: 8px 
 .d { fill: var(--line); }
 p { color: var(--muted); }
 </style></head><body>
-<h1>Ni instruction counts</h1>
+<h1>LeJIT instruction counts</h1>
 <p>From bench/history/instrcount.jsonl (tools/instrhistory.py).</p>
 %s
 </body></html>
@@ -466,6 +483,7 @@ p { color: var(--muted); }
 
 
 def main(argv):
+    pyperf37.lejit_dir(argv)
     if not argv or argv[0] in ('-h', '--help'):
         print(__doc__)
         return

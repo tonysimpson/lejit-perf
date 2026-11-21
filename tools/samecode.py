@@ -1,22 +1,23 @@
-"""Does Ni emit the same machine code with two builds? (doc/FINDINGS.md,
-"Same code"; doc/GENERATION.md step 0)
+"""Does LeJIT emit the same machine code with two builds?
 
-    python3.7 tools/samecode.py A B               # tests and the seven
-    python3.7 tools/samecode.py A B -k richards   # units whose name has it
-    python3.7 tools/samecode.py A B --pyperf      # all of pyperformance too
-    python3.7 tools/samecode.py A B --no-tests    # benchmarks only
-    python3.7 tools/samecode.py A B -v            # every differing copy
+    python3.10 tools/samecode.py A B               # tests and the seven
+    python3.10 tools/samecode.py A B -k richards   # units whose name has it
+    python3.10 tools/samecode.py A B --pyperf      # all of pyperformance too
+    python3.10 tools/samecode.py A B --no-tests    # benchmarks only
+    python3.10 tools/samecode.py A B -v            # every differing copy
 
-A and B are each a git revision (checked out with `git archive` and built
-with NI_CODESTATS=1 under build/samecode/<sha>, kept for next time), a
-directory holding a ni*.so, or the .so itself. A .so must be an
-NI_CODESTATS build. The workload is this checkout's: each tests/cases file
-in one process (its cases called ten times, as tests/child.py warms them),
+A and B are each a revision of the LeJIT repository (checked out with
+`git archive` and built with LE_CODESTATS=1 under build/samecode/<sha>,
+kept for next time) or a LeJIT checkout built in place with LE_CODESTATS=1,
+for the Python that runs this, which needs capstone. The LeJIT repository
+is --lejit DIR, else $LEJIT, else ~/work/lejit, and the workload is its
+tests: each tests/jit/cases file
+in one process (its cases called ten times, as tests/jit/child.py warms them),
 and each benchmark in one process, run until it compiles nothing new
 (at most 20 iterations), with PYTHONHASHSEED=0, address randomisation off
 (setarch -R) and a 4 GB address-space limit. Two processes at a time.
 
-Each process takes ni._codestats(): every copy of every bytecode
+Each process takes _codestats(): every copy of every bytecode
 instruction compiled (the bytes from the start of one instruction to the
 start of the next, as emitted; respawn replays aren't counted), and
 disassembles it with capstone, writing each address as what it points to:
@@ -47,10 +48,9 @@ import sys
 import types
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-CASES = os.path.join(ROOT, 'tests', 'cases')
+sys.path.insert(0, os.path.join(ROOT, 'tools'))
+import pyperf37  # noqa: E402
 BMDIR = os.path.join(ROOT, 'tools', 'pyperformance')
-PY37 = os.environ.get('NI_PY37',
-                      os.path.expanduser('~/.pyenv/versions/3.7.17/bin/python3.7'))
 SEVEN = ('richards', 'deltablue', 'raytrace', 'go', 'hexiom', 'chaos',
          'spectral_norm')
 KINDS = ('analyse', 'call', 'pause', 'respawn', 'promotion')
@@ -61,20 +61,30 @@ TIMING = {'test/eval_breaker': 'signals and threads arrive by the clock'}
 
 # ---------------------------------------------------------------- child
 
-def load_ni(so):
-    import importlib.machinery
-    import importlib.util
-    loader = importlib.machinery.ExtensionFileLoader('ni', so)
-    spec = importlib.util.spec_from_file_location('ni', so, loader=loader)
-    ni = importlib.util.module_from_spec(spec)
-    sys.modules['ni'] = ni
-    loader.exec_module(ni)
-    return ni
+def cases_dir():
+    return os.path.join(pyperf37.lejit_dir(), 'tests', 'jit', 'cases')
 
 
-def run_tests(ni, name):
+def drain(core, acc):
+    """add what core._codestats() has gathered since the last call to acc,
+    [stats, lost, buffers]; true if anything was compiled"""
+    stats, lost, bufs, _ = core._codestats()
+    for k, (op, n, b, cs) in stats.items():
+        e = acc[0].setdefault(k, [op, 0, 0, []])
+        e[1] += n
+        e[2] += b
+        e[3] += cs
+    acc[1] += lost
+    for k, (n, b) in bufs.items():
+        e = acc[2].setdefault(k, [0, 0])
+        e[0] += n
+        e[1] += b
+    return bool(stats or bufs)
+
+
+def run_tests(core, acc, name):
     import importlib
-    sys.path.insert(0, CASES)
+    sys.path.insert(0, cases_dir())
     mod = importlib.import_module(name)
     env = dict(vars(mod), nan=float('nan'), inf=float('inf'))
     for fname, calls, opts in getattr(mod, 'CASES', []):
@@ -87,29 +97,27 @@ def run_tests(ni, name):
                     fn(*args)
                 except Exception:
                     pass
+    drain(core, acc)
     return 10
 
 
-def run_bench(ni, name):
-    sys.path.insert(0, os.path.join(ROOT, 'tools'))
-    import pyperf37
+def run_bench(core, acc, name):
     iterations = 0
     for _, timed in pyperf37.load(os.path.join(BMDIR, 'bm_%s.py' % name)):
-        last = -1
+        drain(core, acc)
         for _ in range(20):
             timed(1)
             iterations += 1
-            now = ni._stats()['code_bytes']
-            if now == last:
+            if not drain(core, acc):
                 break
-            last = now
     return iterations
 
 
 def co_label(co):
     f = co.co_filename
-    if f.startswith(ROOT + os.sep):
-        f = f[len(ROOT) + 1:]
+    for d in (ROOT, pyperf37.lejit_dir()):
+        if f.startswith(d + os.sep):
+            f = f[len(d) + 1:]
     return '%s:%s:%d' % (f, co.co_name, co.co_firstlineno)
 
 
@@ -293,19 +301,20 @@ def normalise(md, namer, addr, code):
     return out
 
 
-def child(so, unit, outfile):
-    ni = load_ni(so)
-    if not hasattr(ni, '_codestats'):
-        sys.exit('%s: not an NI_CODESTATS=1 build' % so)
+def child(tree, unit, outfile):
+    core = pyperf37.start_lejit(tree)
+    if not hasattr(core, '_codestats'):
+        sys.exit('%s: not an LE_CODESTATS=1 build' % tree)
     kind, name = unit.split('/', 1)
     import random
     import tempfile
     random.seed(0)
     tempfile._RandomNameSequence.rng = property(
         lambda self: self.__dict__.setdefault('_seeded', random.Random(0)))
-    ni._codestats()
-    iterations = (run_tests if kind == 'test' else run_bench)(ni, name)
-    stats, lost, bufs, _ = ni._codestats()
+    core._codestats()
+    acc = [{}, 0, {}]
+    iterations = (run_tests if kind == 'test' else run_bench)(core, acc, name)
+    stats, lost, bufs = acc
     import capstone
     md = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_64)
     labels = {}
@@ -337,48 +346,47 @@ def child(so, unit, outfile):
 
 # ---------------------------------------------------------------- parent
 
+def built(d):
+    return glob.glob(os.path.join(d, 'lejit', '_core.cpython-%d%d*.so' % sys.version_info[:2]))
+
+
 def resolve(spec, cache):
-    """the ni*.so for a revision, a directory or a file"""
-    if os.path.isfile(spec):
-        return os.path.abspath(spec), spec
+    """the LeJIT tree for a checkout or a revision"""
     if os.path.isdir(spec):
-        found = glob.glob(os.path.join(spec, 'ni*.so'))
-        if len(found) != 1:
-            sys.exit('%s: expected one ni*.so, found %d' % (spec, len(found)))
-        return os.path.abspath(found[0]), spec
-    sha = subprocess.run(['git', '-C', ROOT, 'rev-parse', '--verify',
+        if not built(spec):
+            sys.exit('%s: no LeJIT built for this Python' % spec)
+        return os.path.abspath(spec), spec
+    sha = subprocess.run(['git', '-C', pyperf37.lejit_dir(), 'rev-parse', '--verify',
                           spec + '^{commit}'], stdout=subprocess.PIPE,
                          universal_newlines=True)
     if sha.returncode:
-        sys.exit('%s: not a file, directory or revision' % spec)
+        sys.exit('%s: not a directory or revision' % spec)
     sha = sha.stdout.strip()
     d = os.path.join(cache, sha[:12])
-    found = glob.glob(os.path.join(d, 'ni*.so'))
-    if found:
-        return found[0], '%s (%s)' % (spec, sha[:12])
-    os.makedirs(d, exist_ok=True)
-    archive = subprocess.Popen(['git', '-C', ROOT, 'archive', sha],
-                               stdout=subprocess.PIPE)
-    subprocess.run(['tar', '-x', '-C', d], stdin=archive.stdout, check=True)
-    archive.wait()
-    for old in glob.glob(os.path.join(d, 'ni*.so')):
-        os.remove(old)
+    if built(d):
+        return d, '%s (%s)' % (spec, sha[:12])
+    if not os.path.isdir(d):
+        os.makedirs(d)
+        archive = subprocess.Popen(['git', '-C', pyperf37.lejit_dir(), 'archive', sha],
+                                   stdout=subprocess.PIPE)
+        subprocess.run(['tar', '-x', '-C', d], stdin=archive.stdout, check=True)
+        archive.wait()
     log = os.path.join(d, 'samecode-build.log')
     print('building %s in %s' % (spec, d), file=sys.stderr)
+    env = {k: x for k, x in os.environ.items() if not k.startswith('LE_')}
     with open(log, 'w') as f:
-        r = subprocess.run([PY37, 'setup.py', 'build_ext', '--inplace'],
+        r = subprocess.run([sys.executable, 'setup.py', 'build_ext', '--inplace'],
                            cwd=d, stdout=f, stderr=subprocess.STDOUT,
-                           env=dict(os.environ, NI_CODESTATS='1'))
-    found = glob.glob(os.path.join(d, 'ni*.so'))
-    if r.returncode or not found:
+                           env=dict(env, LE_CODESTATS='1'))
+    if r.returncode or not built(d):
         sys.exit('%s: build failed, see %s' % (spec, log))
-    return found[0], '%s (%s)' % (spec, sha[:12])
+    return d, '%s (%s)' % (spec, sha[:12])
 
 
 def units(args):
     out = []
     if '--no-tests' not in args:
-        for path in sorted(glob.glob(os.path.join(CASES, '*.py'))):
+        for path in sorted(glob.glob(os.path.join(cases_dir(), '*.py'))):
             if 'CASES' in open(path).read():
                 out.append('test/' + os.path.basename(path)[:-3])
     if '--no-bench' not in args:
@@ -391,7 +399,7 @@ def units(args):
 
 
 def run_child(so, unit, outfile):
-    cmd = [PY37, os.path.abspath(__file__), '--child', so, unit, outfile]
+    cmd = [sys.executable, os.path.abspath(__file__), '--child', so, unit, outfile]
     if os.path.exists('/usr/bin/setarch'):
         cmd = ['setarch', 'x86_64', '-R'] + cmd
     cmd = ['prlimit', '--as=4000000000'] + cmd
@@ -498,6 +506,7 @@ def compare(da, db, verbose, byop):
 
 def main():
     args = sys.argv[1:]
+    pyperf37.lejit_dir(args)
     if args and args[0] == '--child':
         return child(*args[1:4])
     filt = None
@@ -570,7 +579,4 @@ def main():
 
 
 if __name__ == '__main__':
-    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    import heavy
-    heavy.hold()
     sys.exit(main())

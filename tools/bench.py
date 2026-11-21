@@ -1,18 +1,21 @@
-"""Ni against plain CPython 3.7: each benchmark in a fresh process per mode,
-best of three runs, results checked equal.
+"""LeJIT against plain CPython, on the Python that runs this: each
+benchmark in a fresh process per mode, best of three runs, results checked
+equal.
 
-    python3.7 tools/bench.py            # table
-    python3.7 tools/bench.py -k mandel  # only names containing 'mandel'
+    python3.10 tools/bench.py            # table
+    python3.10 tools/bench.py -k mandel  # only names containing 'mandel'
 
-Use a release build (rm ni*.so; python3.7 setup.py build_ext --inplace);
-the build left by tools/check.sh is a debug build.
+The LeJIT checkout is --lejit DIR, else $LEJIT, else ~/work/lejit, built
+for release in place for this Python (make PY=python3.10); the build
+`make check` leaves is a checked build.
 """
 import os
 import subprocess
 import sys
 import time
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import pyperf37  # noqa: E402
 
 
 # ---- integers --------------------------------------------------------------
@@ -344,9 +347,8 @@ BENCHMARKS = [
 
 
 def child(mode, name):
-    if mode == 'ni':
-        sys.path.insert(0, ROOT)
-        import ni
+    if mode == 'lejit':
+        core = pyperf37.start_lejit()
     fn, args = {b[0]: b[1:] for b in BENCHMARKS}[name]
     best = None
     for k in range(3):
@@ -355,22 +357,21 @@ def child(mode, name):
         dt = time.perf_counter() - t
         best = dt if best is None else min(best, dt)
     compiled = ''
-    if mode == 'ni':
-        compiled = ni._code_info(fn.__code__)
-        if ni._debug_build:
-            compiled += ' (debug build)'
+    if mode == 'lejit' and hasattr(core, '_code_info'):
+        compiled = core._code_info(fn.__code__) + ' (checked build)'
     print(repr((best, repr(r), compiled)))
 
 
 def main():
+    pyperf37.lejit_dir(sys.argv)
     names = [b[0] for b in BENCHMARKS]
     if '-k' in sys.argv:
         names = [n for n in names if sys.argv[sys.argv.index('-k') + 1] in n]
-    print('%-14s %9s %9s %7s  %s' % ('', 'CPython', 'Ni', 'speed-up', ''))
+    print('%-14s %9s %9s %7s  %s' % ('', 'CPython', 'LeJIT', 'speed-up', ''))
     tp = tn = 0.0
     for name in names:
         res = {}
-        for mode in ('plain', 'ni'):
+        for mode in ('plain', 'lejit'):
             out = subprocess.run([sys.executable, __file__, '--child', mode, name],
                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                  universal_newlines=True)
@@ -381,10 +382,10 @@ def main():
                 res[mode] = eval(out.stdout.strip().splitlines()[-1])
         if None in res.values():
             continue
-        (p, rp, _), (n, rn, info) = res['plain'], res['ni']
+        (p, rp, _), (n, rn, info) = res['plain'], res['lejit']
         tp += p
         tn += n
-        note = info if info != 'compiled' else ''
+        note = info if info not in ('', 'compiled') else ''
         if rp != rn:
             note += ' RESULTS DIFFER: %s vs %s' % (rp, rn)
         print('%-14s %8.3fs %8.3fs %7.1fx  %s' % (name, p, n, p / n, note))
