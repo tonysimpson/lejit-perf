@@ -1,0 +1,38 @@
+name: Instruction counts
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  instrcount:
+    name: instruction counts (3.10)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: tonysimpson/lejit
+          path: lejit
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10.16"
+      - name: Install tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libffi-dev libunwind-dev valgrind
+          sudo apt-get install -y linux-tools-common "linux-tools-$(uname -r)" ||
+            sudo apt-get install -y linux-tools-common linux-tools-azure
+          sudo sysctl kernel.perf_event_paranoid=1
+          uname -r; lscpu | grep -i -e 'model name' -e hypervisor
+      - name: Build LeJIT
+        run: make -C lejit PY=python
+      - name: perf stat
+        continue-on-error: true
+        run: |
+          perf stat -e instructions:u -- python -c pass
+          python tools/instrcount.py warm -k richards -r 3 --lejit lejit
+      - name: callgrind
+        run: time python tools/instrcount.py warm -k richards -r 3 --callgrind --lejit lejit
+      - name: callgrind, cold
+        run: time python tools/instrcount.py cold -k richards -r 2 --callgrind --lejit lejit

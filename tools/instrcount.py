@@ -20,6 +20,8 @@ prints every repeat. PYTHONHASHSEED=0, address-space randomisation off
 (setarch -R) and every process under a 4 GB address-space limit. Counts
 the Python that runs this, with the LeJIT checkout given by --lejit DIR,
 else $LEJIT, else ~/work/lejit, built for release in place for that Python.
+--callgrind counts under valgrind's callgrind instead of perf, for machines
+without hardware counters; its counts are not comparable with perf's.
 """
 import glob
 import os
@@ -39,6 +41,7 @@ MEMORY_LIMIT = 4000000000
 # iterations (deepcopy_reduce: about 190 K, 0.2% of the loop) thinly.
 WARM_LOOP = 100000000
 MAX_ITERATIONS = 100000
+CALLGRIND = False
 SIGNAL_TEXTS = (': Aborted', ': Segmentation fault', ': Killed', ': Bus error',
                 ': Illegal instruction', ': Floating point exception',
                 ': Trace/breakpoint trap')
@@ -52,6 +55,8 @@ def count(args, timeout=900):
     """instructions:u of running sys.executable with args"""
     if not shutil.which('setarch'):
         raise SystemExit('instrcount needs setarch (util-linux) to turn off randomisation')
+    if CALLGRIND:
+        return count_callgrind(args, timeout * 20)
     with tempfile.NamedTemporaryFile('r', suffix='.perf') as out:
         p = subprocess.run(['perf', 'stat', '-x,', '-e', 'instructions:u', '-o', out.name,
                             '--', 'setarch', os.uname().machine, '-R', sys.executable] + args,
@@ -67,6 +72,22 @@ def count(args, timeout=900):
             f = line.split(',')
             if len(f) > 2 and f[2].startswith('instructions'):
                 return int(f[0])
+    raise RuntimeError('no count for %s' % args)
+
+
+def count_callgrind(args, timeout):
+    """instructions of running sys.executable with args, under callgrind"""
+    with tempfile.NamedTemporaryFile('r', suffix='.callgrind') as out:
+        p = subprocess.run(['setarch', os.uname().machine, '-R', 'valgrind', '--tool=callgrind',
+                            '--smc-check=all-non-file', '--callgrind-out-file=' + out.name,
+                            sys.executable] + args,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=timeout,
+                           env=dict(os.environ, PYTHONHASHSEED='0'), universal_newlines=True)
+        if p.returncode or 'Fatal Python error' in p.stderr:
+            raise RuntimeError('%s: %s' % (args, p.stderr.strip()[-300:]))
+        for line in out.read().splitlines():
+            if line.startswith(('summary:', 'totals:')):
+                return int(line.split()[1])
     raise RuntimeError('no count for %s' % args)
 
 
@@ -153,4 +174,7 @@ if __name__ == '__main__':
     elif sys.argv[1] == '--names':
         child_names(sys.argv[2])
     else:
+        if '--callgrind' in sys.argv:
+            sys.argv.remove('--callgrind')
+            CALLGRIND = True
         main(sys.argv[1:])
