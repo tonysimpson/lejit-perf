@@ -25,9 +25,9 @@ geometric mean of the warm ratios, with '!' on a warm change over 1% and
 '~' on a count too spread to read. graph writes a static
 HTML page (default build/instrhistory.html) of the history per version.
 
-Each record: n (first-parent commits up to it, the sort key), commit (12
-hex digits),
-date (committer, UTC), tool (files- and a hash of the contents of
+Each record: n (first-parent commits up to it), commit (12 hex digits),
+date (committer, UTC; with n, the sort key: main was rewritten after
+7e1e2ee0295d, so n starts lower again after it), tool (files- and a hash of the contents of
 instrcount.py, pyperf37.py and the benchmarks as they are in this
 checkout, then /m and METHOD; BY_COMMIT maps the commit-named tools of the
 first records to this form), v and py (version and full version),
@@ -135,7 +135,7 @@ def read_history():
 
 
 def key(r):
-    return (r['n'], r['commit'], [int(x) for x in r['v'].split('.')], r['kind'], r['bench'])
+    return (r['date'], r['n'], r['commit'], [int(x) for x in r['v'].split('.')], r['kind'], r['bench'])
 
 
 def line(r):
@@ -304,7 +304,7 @@ def report(argv):
         if asked and v not in asked:
             continue
         cs = by_commit(records, v)
-        order = sorted(cs, key=lambda c: first_record(cs, c)['n'])
+        order = sorted(cs, key=lambda c: (first_record(cs, c)['date'], first_record(cs, c)['n']))
         if refs:
             try:
                 a = resolve(refs[0], order)
@@ -367,7 +367,8 @@ def report(argv):
 def series(records, v):
     """[(commit record, {bench: warm count}, geomean against the first, total)]"""
     cs = {c: t[newest(t)] for c, t in by_commit(records, v).items()}
-    order = sorted(cs, key=lambda c: next(iter(cs[c].values()))['n'])
+    order = sorted(cs, key=lambda c: (next(iter(cs[c].values()))['date'],
+                                      next(iter(cs[c].values()))['n']))
     first = cs[order[0]]
     out = []
     for c in order:
