@@ -1,7 +1,8 @@
 """The Python and the LeJIT a tool measures: one venv per CPython version
 under build/venv/, with LeJIT installed into it by pip.
 
-    --python X.Y | X.Y.Z | PATH   pyenv's newest installed X.Y (or that
+    --python X.Y | X.Y.Z | pythonX.Y | PATH
+                                  pyenv's newest installed X.Y (or that
                                   exact version), or that interpreter;
                                   default 3.10
     --lejit REF | DIR             a GitHub ref of tonysimpson/lejit (branch,
@@ -55,6 +56,11 @@ def find_python(spec):
         if not os.access(spec, os.X_OK):
             raise SystemExit('no Python at %s' % spec)
         return os.path.abspath(spec)
+    if spec.startswith('python'):
+        spec = spec[len('python'):]
+    if not spec.replace('.', '').isdigit():
+        raise SystemExit('--python takes a version (3.10 or 3.10.16), '
+                         'pythonX.Y, or a path')
     xy = '.'.join(spec.split('.')[:2])
     found = [d for d in glob.glob(os.path.join(pyenv_root(), 'versions', spec + '*'))
              if os.path.basename(d) == spec or os.path.basename(d).startswith(spec + '.')]
