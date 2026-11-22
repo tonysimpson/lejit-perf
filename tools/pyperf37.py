@@ -1,17 +1,18 @@
 """pyperformance's pure-Python benchmarks (tools/pyperformance/, vendored
 from pyperformance 1.11.0, MIT) with and without LeJIT, on the Python that
-runs this.
+runs this, a venv under build/venv/ (tools/lejitenv.py).
 
 pyperformance itself won't run them on 3.7 (they declare 3.8+) and needs
 pyperf; here a stand-in 'pyperf' module calls each benchmark's function
 directly. The loop count is calibrated on CPython (about 0.2 s), then each
 mode runs one warm-up and the best of five, in a fresh process.
 
-    python3.10 tools/pyperf37.py              # table
-    python3.10 tools/pyperf37.py -k richards  # names containing 'richards'
+    python3 tools/pyperf37.py                       # table
+    python3 tools/pyperf37.py -k richards           # names containing 'richards'
+    python3 tools/pyperf37.py --python 3.7 --lejit ~/work/lejit-worktrees/x
 
-The LeJIT checkout is --lejit DIR, else $LEJIT, else ~/work/lejit, built
-for release in place for this Python (make PY=python3.10).
+--python and --lejit pick the Python and the LeJIT, which is installed into
+that Python's venv first (tools/lejitenv.py: default 3.10 and main).
 """
 import argparse
 import glob
@@ -27,7 +28,8 @@ TARGET = 0.2
 
 
 def lejit_dir(argv=None):
-    """the LeJIT checkout: --lejit DIR (taken out of argv, and passed on to
+    """the LeJIT repository, for tools that read its history or tests:
+    --lejit DIR (taken out of argv, and passed on to
     child processes in $LEJIT), else $LEJIT, else ~/work/lejit"""
     if argv and '--lejit' in argv:
         i = argv.index('--lejit')
@@ -38,14 +40,21 @@ def lejit_dir(argv=None):
 
 
 def start_lejit(d=None):
-    """import LeJIT from the checkout d (default lejit_dir()), start it and
-    return its extension module; an older checkout's ni starts on import"""
-    d = d or lejit_dir()
-    sys.path.insert(0, d)
-    if os.path.isdir(os.path.join(d, 'lejit')):
+    """import LeJIT, the one installed or else from the checkout d, start it
+    and return its extension module; an older checkout's ni starts on import"""
+    if d:
+        sys.path.insert(0, d)
+        has_lejit = os.path.isdir(os.path.join(d, 'lejit'))
+    else:
+        try:
+            import lejit  # noqa: F401
+            has_lejit = True
+        except ImportError:
+            has_lejit = False
+    if has_lejit:
         import lejit
         if lejit._core is None:
-            raise SystemExit('no LeJIT built for this Python in %s' % d)
+            raise SystemExit('no LeJIT built for this Python in %s' % (d or lejit.__file__))
         lejit.start()
         return lejit._core
     import ni
@@ -140,7 +149,8 @@ def run_child(mode, script, loops):
 
 
 def main():
-    lejit_dir(sys.argv)
+    import lejitenv
+    lejitenv.prepare(sys.argv)
     scripts = sorted(glob.glob(os.path.join(BMDIR, 'bm_*.py')))
     if '-k' in sys.argv:
         k = sys.argv[sys.argv.index('-k') + 1]

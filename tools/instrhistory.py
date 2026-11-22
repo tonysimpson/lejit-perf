@@ -5,18 +5,20 @@
     python3 tools/instrhistory.py graph [-o FILE]
 
 COMMIT is in the LeJIT repository given by --lejit DIR, else $LEJIT, else
-~/work/lejit. record builds it for release in a scratch tree,
-build/instrhistory/<commit>, once per version that was supported at that
-commit (3.7 to 3.10 once there was a lejit package; before that its
-tools/versions.txt, and 3.7 before there was one), one version at a time,
+~/work/lejit. record takes it out to a scratch tree,
+build/instrhistory/<commit>, and installs it (a release build, with pip) into
+the venv of each version that was supported at that commit (3.7 to 3.10
+once there was a lejit package; before that its tools/versions.txt, and 3.7
+before there was one; tools/lejitenv.py), one version at a time,
 and counts each with this checkout's tools/instrcount.py: warm (-n 10,
 raised for a short bench) and cold, every bench on its own row, two
 repeats. --python picks versions (X.Y) or names an interpreter (PATH, its
-version read from it); the default interpreters are INTERPRETERS. Take a
+version read from it); the default interpreters are pyenv's
+lejitenv.DEFAULT_VERSIONS. Take a
 heavy-job slot before running it. It adds one line per
 (commit, version, bench, warm or cold); a commit already recorded with
 the same tool is refused. The scratch tree is removed unless --keep, and
-a tree already there is reused, with any module already built in it.
+a tree already there is reused.
 
 report compares two recorded commits (default the newest two of each
 version), by a tool that measured both if there is one (the highest
@@ -37,7 +39,6 @@ smaller repeat), spread ((max - min) / min of the repeats) and noisy
 count under 1,000,000, its loop too short to read).
 """
 import datetime
-import glob
 import hashlib
 import html
 import json
@@ -50,6 +51,7 @@ import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, 'tools'))
+import lejitenv  # noqa: E402
 import pyperf37  # noqa: E402
 HISTORY = os.path.join(ROOT, 'bench', 'history', 'instrcount.jsonl')
 SCRATCH = os.path.join(ROOT, 'build', 'instrhistory')
@@ -65,9 +67,7 @@ NOISY_SPREAD = 0.01
 # (README.md), though two repeats in one record agree
 NOISY_BENCHES = {'hexiom', 'scimark_lu', 'scimark_sor'}
 FLAG = 0.01
-INTERPRETERS = {v: os.path.expanduser('~/.pyenv/versions/%s/bin/python%s' % (full, v))
-                for v, full in (('3.7', '3.7.17'), ('3.8', '3.8.20'),
-                                ('3.9', '3.9.21'), ('3.10', '3.10.16'))}
+VERSIONS = {'.'.join(full.split('.')[:2]): full for full in lejitenv.DEFAULT_VERSIONS}
 
 
 def git(*args, cwd=None):
@@ -154,13 +154,12 @@ def write_history(old, new):
     os.replace(tmp, HISTORY)
 
 
-def counts(py, tree, kind):
+def counts(py, kind):
     args = [py, os.path.join(ROOT, 'tools', 'instrcount.py'), kind, '--each', '-r', str(REPEATS)]
     if kind == 'warm':
         args += ['-n', str(ITERATIONS)]
     p = subprocess.run(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                       universal_newlines=True, env=dict(os.environ, LEJIT=tree),
-                       preexec_fn=limit)
+                       universal_newlines=True, preexec_fn=limit)
     if p.returncode:
         raise SystemExit('instrcount %s failed:\n%s' % (kind, p.stdout[-2000:]))
     out = {}
@@ -171,34 +170,19 @@ def counts(py, tree, kind):
     return out
 
 
-def build(tree, v, py):
-    tag = v.replace('.', '')
-    if glob.glob(os.path.join(tree, '*.cpython-%s*.so' % tag)) or \
-            glob.glob(os.path.join(tree, '*', '*.cpython-%s*.so' % tag)):
-        return
-    env = {k: x for k, x in os.environ.items()
-           if not k.startswith(('NI_', 'LE_'))}
-    log = os.path.join(tree, 'build-%s.log' % v)
-    with open(log, 'w') as f:
-        p = subprocess.run([py, 'setup.py', 'build_ext', '--inplace'], cwd=tree, stdout=f,
-                           stderr=subprocess.STDOUT, env=env, preexec_fn=limit)
-    if p.returncode:
-        raise SystemExit('build failed for %s (%s)' % (v, log))
-
-
 def record(argv):
     rest = [a for i, a in enumerate(argv) if not a.startswith('-') and
             (i == 0 or argv[i - 1] != '--python')]
     sha = git('rev-parse', '--verify', (rest[0] if rest else 'HEAD') + '^{commit}').strip()
     if git('ls-tree', sha, 'lejit'):
-        wanted = list(INTERPRETERS)
+        wanted = list(VERSIONS)
     else:
         try:
             then = versions_table(git('show', sha + ':tools/versions.txt'))
             wanted = [v for v, (s, _) in then.items() if s == 'supported']
         except subprocess.CalledProcessError:
             wanted = ['3.7']
-    pys = dict(INTERPRETERS)
+    pys = {}
     asked = []
     for a in [argv[i + 1] for i, a in enumerate(argv) if a == '--python']:
         if os.sep in a:
@@ -210,7 +194,13 @@ def record(argv):
         asked.append(a)
     if asked:
         wanted = [v for v in wanted if v in asked]
-    vs = [v for v in wanted if os.path.exists(pys.get(v, ''))]
+    for v in wanted:
+        if v not in pys:
+            try:
+                pys[v] = lejitenv.find_python(VERSIONS.get(v, v))
+            except SystemExit as e:
+                print(e, file=sys.stderr)
+    vs = [v for v in wanted if v in pys]
     if not vs:
         raise SystemExit('no version to measure (supported at %s: %s)' % (sha[:12], wanted))
     tool = tool_version()
@@ -231,16 +221,16 @@ def record(argv):
         if archive.wait():
             raise SystemExit('git archive failed')
     for v in vs:
-        py = pys[v]
-        full = subprocess.run([py, '-c', 'import platform; print(platform.python_version())'],
+        full = subprocess.run([pys[v], '-c', 'import platform; print(platform.python_version())'],
                               stdout=subprocess.PIPE, universal_newlines=True,
                               check=True).stdout.strip()
         print('%s %s: building' % (sha[:12], v), flush=True)
-        build(tree, v, py)
+        py = lejitenv.venv_python(pys[v])
+        lejitenv.install(py, tree)
         new = []
         for kind in ('warm', 'cold'):
             print('%s %s: counting %s' % (sha[:12], v, kind), flush=True)
-            for bench, cs in sorted(counts(py, tree, kind).items()):
+            for bench, cs in sorted(counts(py, kind).items()):
                 lo = min(cs)
                 if lo <= 0:
                     raise SystemExit('%s %s: %s count %d, a fault in the method' % (

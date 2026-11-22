@@ -2,13 +2,13 @@
 profiler:
 
     perf record -F 4999 -g -o richards.data \
-        python3.10 tools/profile_bench.py richards 4
+        build/venv/3.10.16/bin/python tools/profile_bench.py richards 4
     perf report -i richards.data --no-children --sort sym -g none
 
 Needs kernel.perf_event_paranoid <= 2 (Debian's default is 3:
 sudo sysctl kernel.perf_event_paranoid=1, until reboot). Emitted code shows
-as [JIT]. The LeJIT checkout is --lejit DIR, else $LEJIT, else
-~/work/lejit, built for release for this Python.
+as [JIT]. Run it in a venv here with LeJIT installed (tools/lejitenv.py
+install), so perf records the benchmark, not pip.
 """
 import os
 import sys
@@ -16,7 +16,6 @@ import time
 TOOLS = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, TOOLS)
 import pyperf37
-pyperf37.lejit_dir(sys.argv)
 pyperf37.start_lejit()
 name, secs = sys.argv[1], float(sys.argv[2])
 benches = pyperf37.load(os.path.join(TOOLS, 'pyperformance', 'bm_%s.py' % name))
