@@ -7,8 +7,8 @@
     python3.10 tools/samecode.py A B -v            # every differing copy
 
 A and B are each a revision of the LeJIT repository (checked out with
-`git archive` and built with LE_CODESTATS=1 under build/samecode/<sha>,
-kept for next time) or a LeJIT checkout built in place with LE_CODESTATS=1,
+`git archive` and built with LEJIT_DEV_CODESTATS=1 under build/samecode/<sha>,
+kept for next time) or a LeJIT checkout built in place with LEJIT_DEV_CODESTATS=1,
 for the Python that runs this, which needs capstone. The LeJIT repository
 is --lejit DIR, else $LEJIT, else ~/work/lejit, and the workload is its
 tests: each tests/jit/cases file
@@ -304,7 +304,7 @@ def normalise(md, namer, addr, code):
 def child(tree, unit, outfile):
     core = pyperf37.start_lejit(tree)
     if not hasattr(core, '_codestats'):
-        sys.exit('%s: not an LE_CODESTATS=1 build' % tree)
+        sys.exit('%s: not a LEJIT_DEV_CODESTATS=1 build' % tree)
     kind, name = unit.split('/', 1)
     import random
     import tempfile
@@ -373,11 +373,12 @@ def resolve(spec, cache):
         archive.wait()
     log = os.path.join(d, 'samecode-build.log')
     print('building %s in %s' % (spec, d), file=sys.stderr)
-    env = {k: x for k, x in os.environ.items() if not k.startswith('LE_')}
+    env = {k: x for k, x in os.environ.items() if not k.startswith(('LE_', 'LEJIT_DEV_'))}
+    # older revisions read LE_CODESTATS
     with open(log, 'w') as f:
         r = subprocess.run([sys.executable, 'setup.py', 'build_ext', '--inplace'],
                            cwd=d, stdout=f, stderr=subprocess.STDOUT,
-                           env=dict(env, LE_CODESTATS='1'))
+                           env=dict(env, LEJIT_DEV_CODESTATS='1', LE_CODESTATS='1'))
     if r.returncode or not built(d):
         sys.exit('%s: build failed, see %s' % (spec, log))
     return d, '%s (%s)' % (spec, sha[:12])

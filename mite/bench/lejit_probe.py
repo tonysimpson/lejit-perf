@@ -1,5 +1,5 @@
-"""With the checked LeJIT build (../lejit-checked, built with LE_ALL_CHECKS=1
-LE_TRACE=1 LE_CODESTATS=1): what LeJIT does with the stats hot path.
+"""With the checked LeJIT build (../lejit-checked, built with
+LEJIT_DEV_TRACE=1 LEJIT_DEV_CODESTATS=1): what LeJIT does with the stats hot path.
 
     python -I lejit_probe.py
 
