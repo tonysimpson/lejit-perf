@@ -147,10 +147,14 @@ def main(argv):
 if __name__ == '__main__':
     sys.path.insert(0, TOOLS)
     import pyperf37
+    if len(sys.argv) < 2:
+        sys.exit(__doc__)
     if sys.argv[1] == '--bench':
         child_bench(sys.argv[2], sys.argv[3], int(sys.argv[4]), int(sys.argv[5]), *sys.argv[6:])
     elif sys.argv[1] == '--names':
         child_names(sys.argv[2])
+    elif sys.argv[1] not in ('cold', 'warm'):
+        sys.exit(__doc__)
     else:
         import lejitenv
         lejitenv.prepare(sys.argv)
