@@ -26,7 +26,7 @@ checked build `make check` leaves. Run Python under
   compares two, `graph` writes an HTML page.
 - `tools/samecode.py A B`: does LeJIT emit the same machine code with two
   revisions or checkouts, per test and benchmark. Builds with
-  `LE_CODESTATS=1` and needs `capstone` in the Python that runs it.
+  `LEJIT_DEV_CODESTATS=1` and needs `capstone` in the Python that runs it.
 - `tools/profile_bench.py BENCH SECONDS`: one benchmark warm, for `perf record`.
 - `mite/`: Tony's mite load-testing framework benchmarked with and without
   LeJIT (21 Nov 2026): `REPORT.md` has the results, where the time goes, and
