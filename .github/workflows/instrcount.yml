@@ -73,6 +73,10 @@ jobs:
           python -m compileall -q perf/tools new/lejit base/lejit
       - name: Count
         if: steps.check.outputs.usable == 'true'
+        # with malloc's per-thread cache off, heap layout moves the counts
+        # less (pyflate's by about 2% otherwise)
+        env:
+          GLIBC_TUNABLES: glibc.malloc.tcache_count=0
         run: |
           for d in base new; do
             for what in warm cold; do
