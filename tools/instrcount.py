@@ -8,8 +8,8 @@ code, for comparing two builds without wall time:
            N is -n, raised for a bench whose N iterations come to under
            WARM_LOOP instructions
 
-    python3.10 tools/instrcount.py cold [-k NAME] [--plain]
-    python3.10 tools/instrcount.py warm [-k NAME] [-b BENCH | --each] [-n 20] [-r 1]
+    python3 tools/instrcount.py cold [-k NAME] [--plain] [--python V] [--lejit REF]
+    python3 tools/instrcount.py warm [-k NAME] [-b BENCH | --each] [-n 20] [-r 1] ...
 
 -k may be repeated (names containing any of them); -b (repeatable) runs
 only the named benches of a script that has several (deepcopy_memo,
@@ -18,8 +18,8 @@ every script its own row, named as the bench (create_gc_cycles, not
 gc_collect); -r repeats each count and
 prints every repeat. PYTHONHASHSEED=0, address-space randomisation off
 (setarch -R) and every process under a 4 GB address-space limit. Counts
-the Python that runs this, with the LeJIT checkout given by --lejit DIR,
-else $LEJIT, else ~/work/lejit, built for release in place for that Python.
+the venv Python of --python with LeJIT --lejit installed in it
+(tools/lejitenv.py: default 3.10 and main).
 """
 import glob
 import os
@@ -147,10 +147,11 @@ def main(argv):
 if __name__ == '__main__':
     sys.path.insert(0, TOOLS)
     import pyperf37
-    pyperf37.lejit_dir(sys.argv)
     if sys.argv[1] == '--bench':
         child_bench(sys.argv[2], sys.argv[3], int(sys.argv[4]), int(sys.argv[5]), *sys.argv[6:])
     elif sys.argv[1] == '--names':
         child_names(sys.argv[2])
     else:
+        import lejitenv
+        lejitenv.prepare(sys.argv)
         main(sys.argv[1:])

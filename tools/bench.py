@@ -1,13 +1,11 @@
-"""LeJIT against plain CPython, on the Python that runs this: each
-benchmark in a fresh process per mode, best of three runs, results checked
-equal.
+"""LeJIT against plain CPython: each benchmark in a fresh process per
+mode, best of three runs, results checked equal.
 
-    python3.10 tools/bench.py            # table
-    python3.10 tools/bench.py -k mandel  # only names containing 'mandel'
+    python3 tools/bench.py            # table
+    python3 tools/bench.py -k mandel  # only names containing 'mandel'
 
-The LeJIT checkout is --lejit DIR, else $LEJIT, else ~/work/lejit, built
-for release in place for this Python (make PY=python3.10); the build
-`make check` leaves is a checked build.
+--python and --lejit pick the Python and the LeJIT, which is installed into
+that Python's venv first (tools/lejitenv.py: default 3.10 and main).
 """
 import os
 import subprocess
@@ -363,7 +361,8 @@ def child(mode, name):
 
 
 def main():
-    pyperf37.lejit_dir(sys.argv)
+    import lejitenv
+    lejitenv.prepare(sys.argv)
     names = [b[0] for b in BENCHMARKS]
     if '-k' in sys.argv:
         names = [n for n in names if sys.argv[sys.argv.index('-k') + 1] in n]
