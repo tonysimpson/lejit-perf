@@ -1,0 +1,141 @@
+name: Instruction counts
+
+# Counts LeJIT's instructions at `lejit` and at `base` on one machine and
+# compares them. Only some of GitHub's runners let perf count instructions,
+# so four runners try at once; each that can count measures, and the report
+# (the run's summary, and the artifact `report`) uses the first of them.
+on:
+  workflow_dispatch:
+    inputs:
+      lejit:
+        description: LeJIT branch or full SHA to count
+        required: true
+      base:
+        description: LeJIT branch or commit to compare it with
+        default: main
+
+jobs:
+  attempt:
+    strategy:
+      fail-fast: false
+      matrix:
+        n: [1, 2, 3, 4]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Install perf
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y linux-tools-common "linux-tools-$(uname -r)" ||
+            sudo apt-get install -y linux-tools-common linux-tools-azure
+          sudo sysctl kernel.perf_event_paranoid=1
+      - name: Check the CPU's counters
+        id: check
+        run: |
+          mkdir out
+          grep -m1 '^model name' /proc/cpuinfo | cut -d: -f2- | xargs > out/cpu
+          perf="$(perf stat -x, -e instructions:u -- true 2>&1 >/dev/null || true)"
+          echo "$perf"
+          if echo "$perf" | cut -d, -f1 | grep -qE '^[0-9]+$'; then
+            echo "$(cat out/cpu): counts instructions"
+            echo "usable=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "$(cat out/cpu): can't count instructions"
+            echo "usable=false" >> "$GITHUB_OUTPUT"
+          fi
+      - if: steps.check.outputs.usable == 'true'
+        uses: actions/checkout@v4
+        with:
+          path: perf
+      - if: steps.check.outputs.usable == 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: tonysimpson/lejit
+          ref: ${{ inputs.lejit }}
+          path: new
+          fetch-depth: 0
+      - if: steps.check.outputs.usable == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10.16"
+      - name: Build both
+        if: steps.check.outputs.usable == 'true'
+        env:
+          BASE: ${{ inputs.base }}
+        run: |
+          sudo apt-get install -y --no-install-recommends libffi-dev libunwind-dev
+          base="$(git -C new rev-parse --verify -q "origin/$BASE^{commit}" ||
+                  git -C new rev-parse --verify "$BASE^{commit}")"
+          git -C new worktree add --detach ../base "$base"
+          git -C new log -1 --format='%h %s' > out/new
+          git -C base log -1 --format='%h %s' > out/base
+          make -C new PY=python
+          make -C base PY=python
+          python -m compileall -q perf/tools new/lejit base/lejit
+      - name: Count
+        if: steps.check.outputs.usable == 'true'
+        run: |
+          for d in base new; do
+            for what in warm cold; do
+              prlimit --as=4000000000 python perf/tools/instrcount.py "$what" --lejit "$d" > "out/$what-$d.txt"
+            done
+          done
+      - name: Compare
+        if: steps.check.outputs.usable == 'true'
+        run: |
+          python - <<'EOF' > out/compare.md
+          def read(f):
+              return {l.split()[0]: int(l.split()[1]) for l in open(f) if l.strip()}
+          for what, title in (('warm', 'Warm, per iteration'), ('cold', 'Cold, one fresh process')):
+              base, new = read('out/%s-base.txt' % what), read('out/%s-new.txt' % what)
+              print('| %s | base | new | change |\n|:--|--:|--:|--:|' % title)
+              for k in base:
+                  print('| %s | %d | %d | %+.2f%% |' % (k, base[k], new[k], 100.0 * (new[k] - base[k]) / base[k]))
+              print()
+          EOF
+          cat out/compare.md
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: attempt-${{ matrix.n }}
+          path: out
+
+  report:
+    needs: attempt
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: attempt-*
+      - name: Report
+        run: |
+          {
+            echo "# Instruction counts"
+            echo
+            measured=
+            for n in 1 2 3 4; do
+              if [ -f "attempt-$n/compare.md" ]; then
+                echo "CPython 3.10, \`perf stat -e instructions:u\` on $(cat "attempt-$n/cpu")."
+                echo
+                echo "new: $(cat "attempt-$n/new")  "
+                echo "base: $(cat "attempt-$n/base")"
+                echo
+                cat "attempt-$n/compare.md"
+                measured=1
+                break
+              fi
+            done
+            [ -n "$measured" ] || echo "No runner could count instructions this time."
+            echo
+            echo "Runners: $(cat attempt-*/cpu | paste -sd ';' | sed 's/;/; /g')."
+          } > report.md
+          cat report.md | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: report
+          path: report.md
+      - name: Fail if an attempt broke
+        if: needs.attempt.result != 'success'
+        run: |
+          echo "an attempt failed: see its log"
+          exit 1
