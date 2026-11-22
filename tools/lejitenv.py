@@ -10,7 +10,9 @@ under build/venv/, with LeJIT installed into it by pip.
                                   default $LEJIT, else main
 
 A local directory is copied first (a git checkout: its files as git sees
-them), so nothing is built inside it. The build is a release build (any LEJIT_DEV_ or LE_ settings are left out).
+them), so nothing is built inside it. The build is a release build (LEJIT_DEV_ and LE_ settings are left out,
+except LEJIT_DEV_FALLBACK: set it to skip to measure a CPython LeJIT
+doesn't support yet, such as 3.11).
 
     python3 tools/lejitenv.py venv [--python V]             # print its python
     python3 tools/lejitenv.py install [--python V] [--lejit REF]
@@ -102,7 +104,10 @@ def venv_python(base):
 def install(py, ref):
     """pip install LeJIT from ref (a GitHub ref or a local directory) into
     the venv whose python is py"""
-    env = {k: v for k, v in os.environ.items() if not k.startswith(('LEJIT_DEV_', 'LE_'))}
+    # a release build, but LEJIT_DEV_FALLBACK still chooses whether a CPython
+    # LeJIT doesn't yet support gets the real thing
+    env = {k: v for k, v in os.environ.items()
+           if k == 'LEJIT_DEV_FALLBACK' or not k.startswith(('LEJIT_DEV_', 'LE_'))}
     pip = [py, '-m', 'pip', 'install', '-q', '--disable-pip-version-check', '--no-deps',
            '--force-reinstall', '--no-build-isolation', '--no-cache-dir']
     print('installing LeJIT %s into %s' % (ref, os.path.dirname(os.path.dirname(py))),
