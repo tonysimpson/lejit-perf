@@ -118,7 +118,12 @@ def load(script):
     fake_pyperf()
     sys.argv = [script]
     code = compile(open(script).read(), script, 'exec')
-    exec(code, {'__name__': '__main__', '__file__': script})
+    # a real module in sys.modules, as when the script is run, so its classes
+    # are found in their module like any program's
+    main = types.ModuleType('__main__')
+    main.__file__ = script
+    sys.modules['__main__'] = main
+    exec(code, main.__dict__)
     return [b for r in made for b in r.benches]
 
 
