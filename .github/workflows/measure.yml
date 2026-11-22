@@ -35,7 +35,9 @@ jobs:
         run: |
           cpu="$(grep -m1 '^model name' /proc/cpuinfo | cut -d: -f2- | xargs)"
           vendor="$(grep -m1 '^vendor_id' /proc/cpuinfo | cut -d: -f2- | xargs)"
-          n="$(perf stat -x, -e instructions:u -- true 2>&1 >/dev/null | cut -d, -f1 | grep -E '^[0-9]+$' || true)"
+          out="$(perf stat -x, -e instructions:u -- true 2>&1 >/dev/null || true)"
+          echo "$out"
+          n="$(echo "$out" | cut -d, -f1 | grep -E '^[0-9]+$' || true)"
           echo "cpu=$vendor $cpu" >> "$GITHUB_OUTPUT"
           if [ -n "$n" ]; then
             echo "$vendor $cpu: counted $n instructions"
