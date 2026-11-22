@@ -57,7 +57,7 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.10.16"
-      - name: Build both
+      - name: Check out the base
         if: steps.check.outputs.usable == 'true'
         env:
           BASE: ${{ inputs.base }}
@@ -68,9 +68,7 @@ jobs:
           git -C new worktree add --detach ../base "$base"
           git -C new log -1 --format='%h %s' > out/new
           git -C base log -1 --format='%h %s' > out/base
-          make -C new PY=python
-          make -C base PY=python
-          python -m compileall -q perf/tools new/lejit base/lejit
+          python -m compileall -q perf/tools
       - name: Count
         if: steps.check.outputs.usable == 'true'
         # with malloc's per-thread cache off, heap layout moves the counts
@@ -80,7 +78,8 @@ jobs:
         run: |
           for d in base new; do
             for what in warm cold; do
-              prlimit --as=4000000000 python perf/tools/instrcount.py "$what" --lejit "$d" > "out/$what-$d.txt"
+              prlimit --as=4000000000 python perf/tools/instrcount.py "$what" \
+                --python "$(command -v python)" --lejit "$d" > "out/$what-$d.txt"
             done
           done
       - name: Compare

@@ -62,7 +62,12 @@ def find_python(spec):
              and os.access(os.path.join(d, 'bin', 'python' + xy), os.X_OK)]
     if not found:
         want = spec if spec.count('.') == 2 else next(
-            (v for v in DEFAULT_VERSIONS if v.startswith(spec + '.')), spec)
+            (v for v in DEFAULT_VERSIONS if v.startswith(spec + '.')), None)
+        if want is None:
+            try:
+                want = output(['pyenv', 'latest', '--known', spec])
+            except (OSError, subprocess.CalledProcessError):
+                want = spec
         raise SystemExit('CPython %s is not installed in pyenv; install it with:\n'
                          '    pyenv install %s' % (spec, want))
     d = max(found, key=lambda d: version_key(os.path.basename(d)))
