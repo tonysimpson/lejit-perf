@@ -1,6 +1,6 @@
 #!/bin/bash
-# One-time setup, safe to run again: pyenv's CPython 3.7 to 3.10 (the
-# versions CI and the history use), a venv for each under build/venv/, and
+# One-time setup, safe to run again: pyenv's CPython 3.7 to 3.14 (the
+# versions CI tests), built shared, a venv for each under build/venv/, and
 # a check for the programs the instruction counts need.
 set -euo pipefail
 here=$(cd "$(dirname "$0")/.." && pwd)
@@ -11,7 +11,10 @@ if ! command -v pyenv > /dev/null; then
 fi
 versions=$(python3 -c "import sys; sys.path.insert(0, '$here/tools'); import lejitenv; print(*lejitenv.DEFAULT_VERSIONS)")
 for v in $versions; do
-    pyenv install --skip-existing "$v"
+    if [ ! -d "$(pyenv root)/versions/$v" ]; then
+        PYTHON_CONFIGURE_OPTS=--enable-shared pyenv install "$v" || {
+            echo "pyenv can't install $v: it is older than that release (update pyenv)"; exit 1; }
+    fi
     python3 "$here/tools/lejitenv.py" venv --python "$v"
 done
 
