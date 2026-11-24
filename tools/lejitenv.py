@@ -28,7 +28,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 VENVS = os.path.join(ROOT, 'build', 'venv')
 LEJIT_URL = 'git+https://github.com/tonysimpson/lejit@'
 # the versions setup.sh installs, as CI and the history use them
-DEFAULT_VERSIONS = ['3.7.17', '3.8.20', '3.9.21', '3.10.16']
+DEFAULT_VERSIONS = ['3.7.17', '3.8.20', '3.9.21', '3.10.16', '3.11.11', '3.12.9', '3.13.2', '3.14.10']
 DEFAULT_PYTHON = '3.10'
 
 
