@@ -22,6 +22,10 @@ long run.
   that run on 3.7–3.10, and their driver: LeJIT against CPython, best of five
   in fresh processes. `-k NAME` picks benchmarks.
 - `tools/bench.py`: small kernels, LeJIT against CPython.
+- Both also run CPython with a frame-evaluation hook installed that only
+  passes frames on to CPython (`tools/passhook.c`, built on demand under
+  `build/passhook/`): what any hook costs, so LeJIT is compared like for
+  like too.
 - `tools/benchmarks.sh`: installs LeJIT, runs both, and keeps the tables in
   `build/bench/`.
 - `tools/setup.sh`, `tools/lejitenv.py`: the Pythons and venvs, and the
