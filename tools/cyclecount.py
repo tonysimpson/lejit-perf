@@ -10,7 +10,7 @@ takes them) as release builds into two directories of the same length under
 build/cycles/, and runs both from the same venv Python with only PYTHONPATH
 telling them apart, so the processes are laid out alike (PYTHONHASHSEED=0,
 setarch -R, as tools/instrcount.py). For a CPython LeJIT doesn't support
-yet, such as 3.14, set LEJIT_DEV_FALLBACK=skip (tools/lejitenv.py).
+yet, such as CPython main, set LEJIT_DEV_FALLBACK=skip (tools/lejitenv.py).
 
 Each process is pinned to the less busy thread of the least busy core and
 runs each benchmark 3 times to warm it, then in chunks of about CHUNK
