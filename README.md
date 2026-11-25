@@ -32,6 +32,13 @@ long run.
   LeJIT install every tool does.
 - `tools/instrcount.py`: instructions per benchmark, warm and cold, under
   `perf stat`. Needs `perf` and `setarch`.
+- `tools/cyclecount.py --lejit NEW [--base main]`: cycles, instructions,
+  branch misses and L1 instruction, L1 data, L2 and DRAM misses per
+  warm iteration, counted inside the benchmark process on chunks free of
+  SMT contention, base against new, over three
+  alternating rounds, with each round's change and the noise. For changes
+  to emitted code, where instruction counts miss microcoded instructions,
+  latency and layout. The docstring says what each event counts on Zen 5.
 - `tools/instrhistory.py`, `bench/history/instrcount.jsonl`: those counts per
   merge to LeJIT's main: `record [COMMIT]` takes a commit of the repository
   `--lejit DIR` (default `~/work/lejit`) out to `build/instrhistory/`,
@@ -50,6 +57,7 @@ long run.
 Examples:
 
     python3 tools/instrcount.py warm -k richards -k nbody -r 2
+    python3 tools/cyclecount.py --python 3.10 --lejit my-branch -k richards
     python3 tools/pyperf37.py -k richards --lejit ~/work/lejit-worktrees/x
     tools/benchmarks.sh --python 3.7 --lejit my-branch bench
     python3 tools/instrhistory.py record --python 3.10

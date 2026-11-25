@@ -101,16 +101,18 @@ def venv_python(base):
     return py
 
 
-def install(py, ref):
+def install(py, ref, target=None):
     """pip install LeJIT from ref (a GitHub ref or a local directory) into
-    the venv whose python is py"""
+    the venv whose python is py, or into the directory target with it"""
     # a release build, but LEJIT_DEV_FALLBACK still chooses whether a CPython
     # LeJIT doesn't yet support gets the real thing
     env = {k: v for k, v in os.environ.items()
            if k == 'LEJIT_DEV_FALLBACK' or not k.startswith(('LEJIT_DEV_', 'LE_'))}
     pip = [py, '-m', 'pip', 'install', '-q', '--disable-pip-version-check', '--no-deps',
            '--force-reinstall', '--no-build-isolation', '--no-cache-dir']
-    print('installing LeJIT %s into %s' % (ref, os.path.dirname(os.path.dirname(py))),
+    if target:
+        pip += ['--target', target]
+    print('installing LeJIT %s into %s' % (ref, target or os.path.dirname(os.path.dirname(py))),
           file=sys.stderr, flush=True)
     if not os.path.isdir(ref):
         run(pip + [LEJIT_URL + ref], env=env, stdout=sys.stderr)
