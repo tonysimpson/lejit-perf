@@ -1,7 +1,5 @@
-"""LeJIT against plain CPython, and against plain CPython with a hook
-installed that only passes frames on to CPython (tools/passhook.c): each
-benchmark in a fresh process per mode, best of three runs, results checked
-equal.
+"""LeJIT against plain CPython: each benchmark in a fresh process per
+mode, best of three runs, results checked equal.
 
     python3 tools/bench.py            # table
     python3 tools/bench.py -k mandel  # only names containing 'mandel'
@@ -349,8 +347,6 @@ BENCHMARKS = [
 def child(mode, name):
     if mode == 'lejit':
         core = pyperf37.start_lejit()
-    elif mode == 'hook':
-        pyperf37.start_passhook()
     fn, args = {b[0]: b[1:] for b in BENCHMARKS}[name]
     best = None
     for k in range(3):
@@ -370,14 +366,11 @@ def main():
     names = [b[0] for b in BENCHMARKS]
     if '-k' in sys.argv:
         names = [n for n in names if sys.argv[sys.argv.index('-k') + 1] in n]
-    pyperf37.build_passhook()
-    print('%-14s %9s %12s %9s %8s %8s' % ('', 'CPython', 'CPython+hook', 'LeJIT',
-                                          'speed-up', 'vs +hook'))
-    tp = th = tn = 0.0
-    ratios, hook_ratios = [], []
+    print('%-14s %9s %9s %7s  %s' % ('', 'CPython', 'LeJIT', 'speed-up', ''))
+    tp = tn = 0.0
     for name in names:
         res = {}
-        for mode in ('plain', 'hook', 'lejit'):
+        for mode in ('plain', 'lejit'):
             out = subprocess.run([sys.executable, __file__, '--child', mode, name],
                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                  universal_newlines=True)
@@ -388,23 +381,18 @@ def main():
                 res[mode] = eval(out.stdout.strip().splitlines()[-1])
         if None in res.values():
             continue
-        (p, rp, _), (h, rh, _), (n, rn, info) = res['plain'], res['hook'], res['lejit']
+        (p, rp, _), (n, rn, info) = res['plain'], res['lejit']
         tp += p
-        th += h
         tn += n
-        ratios.append(p / n)
-        hook_ratios.append(h / n)
         note = info if info not in ('', 'compiled') else ''
-        if rp != rn or rp != rh:
-            note += ' RESULTS DIFFER: %s, %s, %s' % (rp, rh, rn)
-        print('%-14s %8.3fs %11.3fs %8.3fs %7.1fx %7.1fx  %s'
-              % (name, p, h, n, p / n, h / n, note))
+        if rp != rn:
+            note += ' RESULTS DIFFER: %s vs %s' % (rp, rn)
+        print('%-14s %8.3fs %8.3fs %7.1fx  %s' % (name, p, n, p / n, note))
     if tn:
-        print('%-14s %8.3fs %11.3fs %8.3fs %7.1fx %7.1fx' % ('total', tp, th, tn, tp / tn, th / tn))
-        print('%-14s %40.1fx %7.1fx' % ('geometric mean', pyperf37.geomean(ratios),
-                                         pyperf37.geomean(hook_ratios)))
+        print('%-14s %8.3fs %8.3fs %7.1fx' % ('total', tp, tn, tp / tn))
     else:
         print('(no benchmark matches)')
+
 
 if __name__ == '__main__':
     if sys.argv[1:2] == ['--child']:

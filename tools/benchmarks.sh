@@ -10,8 +10,7 @@
 #   tools/benchmarks.sh --lejit ~/work/lejit-worktrees/x   # a checkout
 #
 # Suites: bench   tools/bench.py        small kernels, LeJIT against CPython
-#                                       and CPython with a pass-through hook
-#         pyperf  tools/pyperf37.py     pyperformance, the same
+#         pyperf  tools/pyperf37.py     pyperformance, LeJIT against CPython
 #
 # --python defaults to 3.10 and --lejit to $LEJIT, else main
 # (tools/lejitenv.py). Take a heavy-job slot first.
@@ -28,7 +27,7 @@ while [ $# -gt 0 ]; do
         -k) filter=(-k "$2"); shift ;;
         --python) python=$2; shift ;;
         --lejit) lejit=$2; shift ;;
-        -h|--help) sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        -h|--help) sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) echo "unknown argument: $1 (try --help)"; exit 2 ;;
     esac
     shift

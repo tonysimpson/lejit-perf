@@ -1,14 +1,11 @@
 """pyperformance's pure-Python benchmarks (tools/pyperformance/, vendored
 from pyperformance 1.11.0, MIT) with and without LeJIT, on the Python that
-runs this, a venv under build/venv/ (tools/lejitenv.py). A third run, plain
-CPython with a hook installed that only passes frames on to CPython
-(tools/passhook.c), compares LeJIT with CPython paying what any hook costs.
+runs this, a venv under build/venv/ (tools/lejitenv.py).
 
 pyperformance itself won't run them on 3.7 (they declare 3.8+) and needs
 pyperf; here a stand-in 'pyperf' module calls each benchmark's function
 directly. The loop count is calibrated on CPython (about 0.2 s), then each
-mode (CPython, CPython+hook, LeJIT) runs one warm-up and the best of five,
-in a fresh process.
+mode runs one warm-up and the best of five, in a fresh process.
 
     python3 tools/pyperf37.py                       # table
     python3 tools/pyperf37.py -k richards           # names containing 'richards'
@@ -65,37 +62,6 @@ def start_lejit(d=None):
         ni.start()
         return ni._core
     return ni
-
-
-def passhook_dir():
-    import platform
-    return os.path.join(ROOT, 'build', 'passhook', platform.python_version())
-
-
-def build_passhook():
-    """build tools/passhook.c for the Python that runs this, if it's missing
-    or older than its source"""
-    import ctypes
-    import shlex
-    import sysconfig
-    src = os.path.join(ROOT, 'tools', 'passhook.c')
-    so = os.path.join(passhook_dir(), 'passhook' + sysconfig.get_config_var('EXT_SUFFIX'))
-    if os.path.exists(so) and os.path.getmtime(so) >= os.path.getmtime(src):
-        return
-    os.makedirs(passhook_dir(), exist_ok=True)
-    define = []
-    if hasattr(ctypes.pythonapi, '_PyInterpreterState_SetEvalFrameFunc'):
-        define = ['-DHAVE_SET_EVAL_FRAME_FUNC']
-    subprocess.run(shlex.split(sysconfig.get_config_var('CC')) + [
-        '-O2', '-fPIC', '-shared', '-I', sysconfig.get_paths()['include']] + define +
-        [src, '-o', so], check=True)
-
-
-def start_passhook():
-    """install the pass-through hook (built by build_passhook)"""
-    sys.path.insert(0, passhook_dir())
-    import passhook
-    passhook.install()
 
 
 class Runner:
@@ -164,8 +130,6 @@ def load(script):
 def child(mode, script, loops):
     if mode == 'lejit':
         start_lejit()
-    elif mode == 'hook':
-        start_passhook()
     out = {}
     for name, timed in load(script):
         n = loops.get(name)
@@ -196,43 +160,30 @@ def main():
     if '-k' in sys.argv:
         k = sys.argv[sys.argv.index('-k') + 1]
         scripts = [s for s in scripts if k in os.path.basename(s)]
-    build_passhook()
-    print('%-26s %9s %12s %9s %8s %8s' % ('', 'CPython', 'CPython+hook', 'LeJIT',
-                                          'speed-up', 'vs +hook'))
-    ratios, hook_ratios = [], []
+    print('%-26s %9s %9s %8s' % ('', 'CPython', 'LeJIT', 'speed-up'))
+    ratios = []
     for s in scripts:
         plain, err = run_child('plain', s, {})
         if plain is None:
             print('%-26s CPython failed: %s' % (os.path.basename(s), err))
             continue
-        loops = {k: v[0] for k, v in plain.items()}
-        hook_res, hook_err = run_child('hook', s, loops)
-        jit_res, err = run_child('lejit', s, loops)
+        jit_res, err = run_child('lejit', s, {k: v[0] for k, v in plain.items()})
         for name, (n, tp) in sorted(plain.items()):
-            if hook_res is None:
-                print('%-26s %8.3fs   CPython+hook failed: %s' % (name, tp, hook_err[:60]))
-                continue
             if jit_res is None:
                 print('%-26s %8.3fs   LeJIT failed: %s' % (name, tp, err[:60]))
                 continue
-            (nh, th), (nn, tn) = hook_res[name], jit_res[name]
-            if nn != n or nh != n:
-                print('%-26s loop counts differ: %d, %d, %d' % (name, n, nh, nn))
+            nn, tn = jit_res[name]
+            if nn != n:
+                print('%-26s loop counts differ: %d, %d' % (name, n, nn))
                 continue
             ratios.append(tp / tn)
-            hook_ratios.append(th / tn)
-            print('%-26s %8.3fs %11.3fs %8.3fs %7.2fx %7.2fx %6d'
-                  % (name, tp, th, tn, tp / tn, th / tn, n))
+            print('%-26s %8.3fs %8.3fs %7.2fx %6d' % (name, tp, tn, tp / tn, n))
     if ratios:
-        print('%-26s %40.2fx %7.2fx  (%d benchmarks)'
-              % ('geometric mean', geomean(ratios), geomean(hook_ratios), len(ratios)))
+        g = 1.0
+        for r in ratios:
+            g *= r
+        print('%-26s %28.2fx  (%d benchmarks)' % ('geometric mean', g ** (1 / len(ratios)), len(ratios)))
 
-
-def geomean(xs):
-    g = 1.0
-    for x in xs:
-        g *= x
-    return g ** (1 / len(xs))
 
 if __name__ == '__main__':
     if sys.argv[1:2] == ['--child']:
