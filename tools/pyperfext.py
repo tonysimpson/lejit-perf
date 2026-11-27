@@ -22,6 +22,7 @@ change. tools/instrcount.py, tools/pyperf37.py and tools/pyperformance/ are
 untouched, so the core counts and the history's tool name are too.
 """
 import asyncio
+import builtins
 import importlib
 import os
 import platform
@@ -190,6 +191,8 @@ def load(b, run=None):
     code = compile(open(b.script).read(), b.script, 'exec')
     main = types.ModuleType('__main__')
     main.__file__ = b.script
+    # the module, as a real __main__ has (sphinx's script sets attributes on it)
+    main.__builtins__ = builtins
     sys.modules['__main__'] = main
     exec(code, main.__dict__)
     return [x for r in made for x in r.benches]
