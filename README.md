@@ -21,6 +21,17 @@ long run.
 - `tools/pyperformance/`, `tools/pyperf37.py`: the pyperformance benchmarks
   that run on 3.7–3.10, and their driver: LeJIT against CPython, best of five
   in fresh processes. `-k NAME` picks benchmarks.
+- `tools/pyperformance_extended/`, `tools/pyperfext.py`: the rest of
+  pyperformance 1.14.0 that runs in-process (`benchmarks.py` there lists each
+  benchmark's script, options and what it needs), counted as `instrcount.py`
+  counts the core 23: `pyperfext.py warm|cold [--set all]`, with the same
+  options. `--set all` prints the core rows and total first, as
+  `instrcount.py` does. A benchmark is skipped, with a row saying why, on a
+  Python that can't compile it, lacks a module or attribute it needs, can't
+  install its packages, or fails it under plain CPython. Third-party packages
+  are installed by pip, pinned as pyperformance pins them, into
+  `build/pydeps/<version>/<script>/` on first use. `instrcount.py`, the core
+  set and the history are unchanged by it.
 - `tools/bench.py`: small kernels, LeJIT against CPython.
 - `tools/benchmarks.sh`: installs LeJIT, runs both, and keeps the tables in
   `build/bench/`.
@@ -53,6 +64,7 @@ long run.
 Examples:
 
     python3 tools/instrcount.py warm -k richards -k nbody -r 2
+    python3 tools/pyperfext.py warm --python 3.15 -k regex -r 2
     python3 tools/cyclecount.py --python 3.10 --lejit my-branch -k richards
     python3 tools/pyperf37.py -k richards --lejit ~/work/lejit-worktrees/x
     tools/benchmarks.sh --python 3.7 --lejit my-branch bench
