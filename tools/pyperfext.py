@@ -177,8 +177,6 @@ def load(b, run=None):
     """run b's script as __main__ with its options, calling run(name, timed)
     for each bench as the script declares it; its benches"""
     use_deps(b)
-    # for the worker processes that import the script again
-    sys.path.append(os.path.join(EXTENDED_DIR, 'pyperf_stub'))
     made = []
     Runner.options, Runner.run = b.options, staticmethod(run) if run else None
 
@@ -242,7 +240,7 @@ def failed(me, mode, b, only):
         try:
             instrcount.count([me, '--bench', 'plain', b.name, '1', '0', only])
             return 'failed under LeJIT'
-        except RuntimeError:
+        except (RuntimeError, subprocess.TimeoutExpired):
             pass
     return 'skipped: fails under plain CPython'
 
@@ -268,7 +266,7 @@ def main(argv):
     for b in chosen:
         declared = names(b)
         if declared[:1] and declared[0].startswith('skipped: '):
-            print('%-24s %s' % (b.name, declared[0]), flush=True)
+            print('%-32s %s' % (b.name, declared[0]), flush=True)
             continue
         # with --each, a row per bench the script declares, if it has several
         for only in (declared if each and len(declared) > 1 else benches or ['']):
@@ -278,13 +276,13 @@ def main(argv):
                           for _ in range(reps)]
                 else:
                     cs = instrcount.warm(me, mode, b.name, n, only, reps)
-            except RuntimeError as e:
-                print('%-24s %s: %s' % (only or b.name, failed(me, mode, b, only),
+            except (RuntimeError, subprocess.TimeoutExpired) as e:
+                print('%-32s %s: %s' % (only or b.name, failed(me, mode, b, only),
                                         str(e).strip().splitlines()[-1][-120:]), flush=True)
                 continue
             total += cs[0]
-            print('%-24s %s' % (only or b.name, ' '.join('%15d' % c for c in cs)), flush=True)
-    print('%-24s %15d' % ('total extended' if which == 'all' else 'total', total))
+            print('%-32s %s' % (only or b.name, ' '.join('%15d' % c for c in cs)), flush=True)
+    print('%-32s %15d' % ('total extended' if which == 'all' else 'total', total))
 
 
 if __name__ == '__main__':

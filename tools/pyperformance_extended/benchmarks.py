@@ -48,7 +48,6 @@ BENCHMARKS = [
     ('base64', 'base64', [], ['random.randbytes']),
     ('bpe_tokeniser', 'bpe_tokeniser', [], []),
     ('chameleon', 'chameleon', [], ['chameleon']),
-    ('concurrent_imap', 'concurrent_imap', [], []),
     ('crypto_pyaes', 'crypto_pyaes', [], ['pyaes']),
     ('decimal_factorial', 'decimal_factorial', [], ['_decimal']),
     ('decimal_pi', 'decimal_pi', [], ['_decimal']),
