@@ -4,6 +4,13 @@ layout, cache misses).
 
     python3 tools/cyclecount.py --lejit NEW [--base main] [--python V]
                                 [-k NAME] [-r 3]
+    python3 tools/cyclecount.py --plain --lejit NEW | --cpython-jit PATH ...
+
+--plain makes the base plain CPython of --python, no LeJIT. --cpython-jit
+PATH makes the new side plain CPython at PATH, a build configured with
+--enable-experimental-jit, with its JIT on (PYTHON_JIT=1; its venv as
+tools/lejitenv.py makes it); the two sides then run different interpreters,
+so they aren't laid out alike.
 
 Installs both LeJITs (GitHub refs or local checkouts, as tools/lejitenv.py
 takes them) as release builds into two directories of the same length under
@@ -166,12 +173,13 @@ def pad(lines):
         ns['pad'](0)
 
 
-def child(script, lines):
+def child(script, lines, plain):
     """per bench of script, per group: each chunk's counts per iteration,
     as JSON; a group takes chunks in turn with the others until it has
     QUIET_CHUNKS quiet ones or MAX_CHUNKS in all"""
     import pyperf37
-    pyperf37.start_lejit()
+    if not plain:
+        pyperf37.start_lejit()
     pad(lines)
     counters = Counters(GROUPS)
     out = []
@@ -219,15 +227,17 @@ def quietest_cpu():
     return min(cpus, key=lambda c: busy[c])
 
 
-def measure(py, path, script, lines, timeout=3600):
+def measure(side, script, lines, timeout=3600):
     """one process: {count: per iteration} for script, summed over its
     benches, each the median of a group's quiet chunks (or its
     QUIET_CHUNKS least contended); whether any count was scaled; and
     whether a group had too few quiet chunks"""
-    env = dict(os.environ, PYTHONHASHSEED='0', PYTHONPATH=path)
+    py, path, extra = side
+    env = dict(os.environ, PYTHONHASHSEED='0', PYTHONPATH=path or '', **extra)
     cpu = quietest_cpu()
     p = subprocess.run(['taskset', '-c', str(cpu), 'setarch', os.uname().machine, '-R', py,
-                        os.path.abspath(__file__), '--child', script, str(lines)],
+                        os.path.abspath(__file__), '--child', script, str(lines),
+                        'plain' if path is None else 'lejit'],
                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout,
                        env=env, preexec_fn=instrcount.limit, universal_newlines=True)
     if p.returncode:
@@ -291,8 +301,10 @@ def main(argv):
     nrounds = int(argv[argv.index('-r') + 1]) if '-r' in argv else 3
     spec = lejitenv.take(argv, '--python')
     new_ref = lejitenv.take(argv, '--lejit')
-    base_ref = lejitenv.take(argv, '--base') or 'main'
-    if not new_ref:
+    jit = lejitenv.take(argv, '--cpython-jit')
+    plain = '--plain' in argv
+    base_ref = 'plain' if plain else lejitenv.take(argv, '--base') or 'main'
+    if bool(new_ref) == bool(jit):
         sys.exit(__doc__)
     if 'AuthenticAMD' not in open('/proc/cpuinfo').read():
         sys.exit('cyclecount uses AMD Zen 5 counters')
@@ -301,9 +313,17 @@ def main(argv):
     work = tempfile.mkdtemp(prefix='run-', dir=os.path.join(ROOT, 'build', 'cycles'))
     try:
         # equal-length paths, so both builds' processes are laid out alike
-        paths = {'base': os.path.join(work, 'a'), 'new': os.path.join(work, 'b')}
-        lejitenv.install(py, base_ref, paths['base'])
-        lejitenv.install(py, new_ref, paths['new'])
+        sides = {'base': (py, os.path.join(work, 'a'), {}),
+                 'new': (py, os.path.join(work, 'b'), {})}
+        if plain:
+            sides['base'] = (py, None, {})
+        else:
+            lejitenv.install(py, base_ref, sides['base'][1])
+        if jit:
+            sides['new'] = (lejitenv.jit_python(jit), None, {'PYTHON_JIT': '1'})
+            new_ref = 'CPython JIT %s' % jit
+        else:
+            lejitenv.install(py, new_ref, sides['new'][1])
         version = subprocess.run([py, '-c', 'import platform; print(platform.python_version())'],
                                  stdout=subprocess.PIPE, universal_newlines=True).stdout.strip()
         start = loadavg()
@@ -319,7 +339,7 @@ def main(argv):
                 for b in (['base', 'new'] if r % 2 == 0 else ['new', 'base']):
                     # a process that found too few quiet chunks is run again
                     for _ in range(RETRIES):
-                        counts, s, c = measure(py, paths[b], script, pads[r])
+                        counts, s, c = measure(sides[b], script, pads[r])
                         if not c:
                             break
                     got[b].append(counts)
@@ -354,6 +374,6 @@ def main(argv):
 
 if __name__ == '__main__':
     if sys.argv[1:2] == ['--child']:
-        child(sys.argv[2], int(sys.argv[3]))
+        child(sys.argv[2], int(sys.argv[3]), sys.argv[4] == 'plain')
     else:
         main(sys.argv[1:])

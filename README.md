@@ -37,6 +37,11 @@ long run.
   `build/bench/`.
 - `tools/setup.sh`, `tools/lejitenv.py`: the Pythons and venvs, and the
   LeJIT install every tool does.
+- **CPython's own JIT:** `--cpython-jit PATH` in place of `--python` and
+  `--lejit` runs a tool plain on PATH, a CPython configured with
+  `--enable-experimental-jit`, with `PYTHON_JIT=1`. `cyclecount.py --plain`
+  makes its base plain CPython of `--python`; with `--cpython-jit PATH` in
+  place of `--lejit` it compares plain CPython with CPython's JIT.
 - `tools/instrcount.py`: instructions per benchmark, warm and cold, under
   `perf stat`. Needs `perf` and `setarch`.
 - `tools/cyclecount.py --lejit NEW [--base main]`: cycles, instructions,
