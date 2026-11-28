@@ -8,6 +8,10 @@ under build/venv/, with LeJIT installed into it by pip.
     --lejit REF | DIR             a GitHub ref of tonysimpson/lejit (branch,
                                   tag or full SHA), or a local checkout;
                                   default $LEJIT, else main
+    --cpython-jit PATH            instead, plain CPython at PATH (a build
+                                  configured with --enable-experimental-jit)
+                                  with its own JIT on (PYTHON_JIT=1), no
+                                  LeJIT; its venv is build/venv/X.Y.Z-jit
 
 A local directory is copied first (a git checkout: its files as git sees
 them), so nothing is built inside it. The build is a release build (LEJIT_DEV_ and LE_ settings are left out,
@@ -82,11 +86,11 @@ def find_python(spec):
     return os.path.join(d, 'bin', 'python' + xy)
 
 
-def venv_python(base):
+def venv_python(base, suffix=''):
     """the venv for the interpreter base, made if missing, with what a
-    LeJIT build needs"""
+    LeJIT build needs; its directory is the version and suffix"""
     full = output([base, '-c', 'import platform; print(platform.python_version())'])
-    d = os.path.join(VENVS, full)
+    d = os.path.join(VENVS, full + suffix)
     py = os.path.join(d, 'bin', 'python')
     cfg = os.path.join(d, 'pyvenv.cfg')
     if os.path.exists(cfg):
@@ -145,6 +149,17 @@ def take(argv, flag):
     return value
 
 
+def jit_python(path):
+    """the venv python for CPython's JIT at path, checked to turn it on;
+    PYTHON_JIT=1 is set for this process and its children"""
+    os.environ['PYTHON_JIT'] = '1'
+    py = venv_python(find_python(path), '-jit')
+    on = output([py, '-c', "import sys; print(hasattr(sys, '_jit') and sys._jit.is_enabled())"])
+    if on != 'True':
+        raise SystemExit("%s has no JIT that PYTHON_JIT=1 turns on" % path)
+    return py
+
+
 def ours():
     """is this Python one of the venvs here?"""
     return os.path.dirname(os.path.realpath(sys.prefix)) == os.path.realpath(VENVS)
@@ -153,7 +168,13 @@ def ours():
 def prepare(argv):
     """take --python and --lejit out of argv; unless this already runs in a
     venv here with neither given, install LeJIT into the venv for --python
-    and run this tool again in it"""
+    and run this tool again in it; or, for --cpython-jit, run it again in
+    that one's venv, plain"""
+    jit = take(argv, '--cpython-jit')
+    if jit:
+        py = jit_python(jit)
+        sys.stdout.flush()
+        os.execv(py, [py] + argv + ['--plain'])
     spec, ref = take(argv, '--python'), take(argv, '--lejit')
     if ours() and spec is None and ref is None:
         return
