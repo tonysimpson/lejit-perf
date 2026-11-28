@@ -12,7 +12,7 @@ under build/venv/, with LeJIT installed into it by pip.
 A local directory is copied first (a git checkout: its files as git sees
 them), so nothing is built inside it. The build is a release build (LEJIT_DEV_ and LE_ settings are left out,
 except LEJIT_DEV_FALLBACK: set it to skip to measure a CPython LeJIT
-doesn't support yet, such as 3.11).
+doesn't support yet, such as CPython main).
 
     python3 tools/lejitenv.py venv [--python V]             # print its python
     python3 tools/lejitenv.py install [--python V] [--lejit REF]
