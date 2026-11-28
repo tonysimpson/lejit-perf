@@ -30,6 +30,14 @@ up to RETRIES times, then counted from its least contended chunks and
 named in the report. -r rounds (default 3) each run one process per build,
 alternating which goes first.
 
+Where code lands moves cycles with no change to it: fannkuch's warm
+iteration on 3.11 takes about 7% more cycles (40% more branch misses) in
+some layouts. So each round first compiles and runs a function of its own
+size (pad), PAD_LINES at most, chosen from PAD_SEED, the same in both
+builds' processes: what LeJIT emits afterwards lands further on, and the
+heap is laid out differently, so a layout effect shows as spread over the
+rounds rather than as a change.
+
 The counters, Zen 5 encodings. Zen 5 has six and the NMI watchdog takes
 one, so there are three groups of at most five, enabled in turn, chunk by
 chunk, each with cycles and the SMT count; nothing is multiplexed, and a
@@ -52,7 +60,8 @@ count the kernel multiplexed anyway is marked "scaled".
                 such are counted only by the amd_l3 PMU, for the whole
                 machine
 
-Noise: each build's spread over the rounds, (max - min) / median. A change
+Noise: each build's spread over the rounds (so over the pads), (max -
+min) / median. A change
 is marked real (*) only when every round moves the same way, no round of
 one build falls within the other's range, and the median change is at least
 0.1% and beyond both builds' spread, on a count of at least SMALL per
@@ -61,6 +70,7 @@ printed at the start and end.
 """
 import json
 import os
+import random
 import shutil
 import statistics
 import subprocess
@@ -102,6 +112,8 @@ MAX_CHUNKS = 100          # per group
 BUDGET = 10000000000      # instructions per group, at most (but 3 chunks)
 RETRIES = 5
 SMALL = 1000              # per iteration: a count this small is never marked real
+PAD_LINES = 64            # each round's shift, in pad lines below this
+PAD_SEED = 0              # which ones, the same for both builds
 
 
 class Counters:
@@ -144,12 +156,23 @@ def contention(c):
     return c['smt-lost'] / (DISPATCH_WIDTH * c['cycles']) if c['cycles'] else 0
 
 
-def child(script):
+def pad(lines):
+    """compile and run once a function of this many lines (none for 0), so
+    that what LeJIT emits afterwards, and the heap, are laid out further on:
+    the next function's code by about 24 bytes a line"""
+    if lines:
+        ns = {}
+        exec('def pad(x):\n' + '    x = x + 1\n' * lines + '    return x\n', ns)
+        ns['pad'](0)
+
+
+def child(script, lines):
     """per bench of script, per group: each chunk's counts per iteration,
     as JSON; a group takes chunks in turn with the others until it has
     QUIET_CHUNKS quiet ones or MAX_CHUNKS in all"""
     import pyperf37
     pyperf37.start_lejit()
+    pad(lines)
     counters = Counters(GROUPS)
     out = []
     for name, timed in pyperf37.load(script):
@@ -196,7 +219,7 @@ def quietest_cpu():
     return min(cpus, key=lambda c: busy[c])
 
 
-def measure(py, path, script, timeout=3600):
+def measure(py, path, script, lines, timeout=3600):
     """one process: {count: per iteration} for script, summed over its
     benches, each the median of a group's quiet chunks (or its
     QUIET_CHUNKS least contended); whether any count was scaled; and
@@ -204,7 +227,7 @@ def measure(py, path, script, timeout=3600):
     env = dict(os.environ, PYTHONHASHSEED='0', PYTHONPATH=path)
     cpu = quietest_cpu()
     p = subprocess.run(['taskset', '-c', str(cpu), 'setarch', os.uname().machine, '-R', py,
-                        os.path.abspath(__file__), '--child', script],
+                        os.path.abspath(__file__), '--child', script, str(lines)],
                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout,
                        env=env, preexec_fn=instrcount.limit, universal_newlines=True)
     if p.returncode:
@@ -288,6 +311,7 @@ def main(argv):
             os.path.join(TOOLS, 'pyperformance', f)
             for f in os.listdir(os.path.join(TOOLS, 'pyperformance'))
             if f.startswith('bm_') and f.endswith('.py')), keys)
+        pads = random.Random(PAD_SEED).sample(range(PAD_LINES), nrounds)
         rows, scaled, contended = [], set(), set()
         for script in scripts:
             got = {'base': [], 'new': []}
@@ -295,7 +319,7 @@ def main(argv):
                 for b in (['base', 'new'] if r % 2 == 0 else ['new', 'base']):
                     # a process that found too few quiet chunks is run again
                     for _ in range(RETRIES):
-                        counts, s, c = measure(py, paths[b], script)
+                        counts, s, c = measure(py, paths[b], script, pads[r])
                         if not c:
                             break
                     got[b].append(counts)
@@ -313,9 +337,10 @@ def main(argv):
             [sum(m[metric][i][r] for _, m in rows) for r in range(nrounds)] for i in (0, 1))
             for metric, _ in METRICS}))
         print('# Cycles and cache misses, warm, per iteration\n')
-        print('CPython %s; base %s, new %s; %d rounds; load average %s at the start, '
-              '%s at the end (%d threads).' % (version, base_ref, new_ref, nrounds, start,
-                                               loadavg(), os.cpu_count()))
+        print('CPython %s; base %s, new %s; %d rounds, padded by %s lines; load average '
+              '%s at the start, %s at the end (%d threads).' % (
+                  version, base_ref, new_ref, nrounds, ' '.join(map(str, pads)), start,
+                  loadavg(), os.cpu_count()))
         print('Scaled (multiplexed): %s.' % ', '.join(sorted(scaled)) if scaled else
               'No count was scaled.')
         if contended:
@@ -329,6 +354,6 @@ def main(argv):
 
 if __name__ == '__main__':
     if sys.argv[1:2] == ['--child']:
-        child(sys.argv[2])
+        child(sys.argv[2], int(sys.argv[3]))
     else:
         main(sys.argv[1:])
