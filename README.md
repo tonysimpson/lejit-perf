@@ -32,7 +32,8 @@ long run.
   branch misses and L1 instruction, L1 data, L2 and DRAM misses per
   warm iteration, counted inside the benchmark process on chunks free of
   SMT contention, base against new, over three
-  alternating rounds, with each round's change and the noise. For changes
+  alternating rounds, each laid out differently (a small function compiled
+  first moves the code and heap), with each round's change and the noise. For changes
   to emitted code, where instruction counts miss microcoded instructions,
   latency and layout. The docstring says what each event counts on Zen 5.
 - `tools/instrhistory.py`, `bench/history/instrcount.jsonl`: those counts per
